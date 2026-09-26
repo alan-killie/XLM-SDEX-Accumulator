@@ -10,7 +10,7 @@ public_key = kp.public_key
 
 server = Server("https://horizon.stellar.org")
 XLM = Asset.native()
-USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN")
+USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN") # Mainnet Circle USDC
 
 STATE_FILE = "grid_state.json"
 NUM_TIERS = 10             # Divide available capital into 10 equal parts
@@ -42,7 +42,7 @@ def get_mid_price():
     return (float(bids[0]["price"]) + float(asks[0]["price"])) / 2
 
 # --- AUTO-CANCEL STALE SDEX OFFERS ---
-def cancel_stale_offers(account, builder):
+def cancel_stale_offers(builder):
     cancellation_count = 0
     try:
         offers_page = server.offers().for_account(public_key).call()
@@ -77,8 +77,13 @@ def run_accumulator_bot():
         return
 
     state = load_state()
+    
+    # Sequence account for transaction building
     account = server.load_account(public_key)
     
+    # Detailed account data for fetching balances
+    account_details = server.accounts().account_id(public_key).call()
+
     builder = TransactionBuilder(
         source_account=account,
         network_passphrase=Network.PUBLIC_NETWORK_PASSPHRASE,
@@ -88,12 +93,12 @@ def run_accumulator_bot():
     action_taken = False
 
     # 1. Clean up stale orders
-    if cancel_stale_offers(account, builder) > 0:
+    if cancel_stale_offers(builder) > 0:
         action_taken = True
 
     # 2. Check available USDC balance
     usdc_balance = 0.0
-    for b in account.balances:
+    for b in account_details.get("balances", []):
         if b.get("asset_code") == "USDC":
             usdc_balance = float(b["balance"])
 
@@ -107,7 +112,7 @@ def run_accumulator_bot():
             xlm_to_sell = round(initial_usdc_cost / price, 2)
             xlm_retained = round(pos["xlm_amount"] - xlm_to_sell, 2)
 
-            print(f"Target Hit! Selling {xlm_to_sell} XLM @ ${price:.4f} to reclaim ${initial_usdc_cost:.2f} USDC.")
+            print(f"Target Hit! Selling {xlm_to_sell} XLM @ ${price:.4f} to reclaim${initial_usdc_cost:.2f} USDC.")
             print(f"Retained XLM Profit: {xlm_retained} XLM")
 
             builder.append_manage_sell_offer_op(
@@ -126,7 +131,6 @@ def run_accumulator_bot():
     state["open_positions"] = remaining_positions
 
     # 4. Calculate Dynamic Trade Size based on available USDC
-    # Splits balance into 10 equal parts, bounded by MIN_TRADE_USDC ($1.00)
     calculated_chunk = round(usdc_balance / NUM_TIERS, 2)
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
@@ -156,10 +160,6 @@ def run_accumulator_bot():
         tx.sign(kp)
         res = server.submit_transaction(tx)
         save_state(state)
-        print(f"Submitted on-chain (Tx Hash: {res['hash']})")
-        print(f"Total XLM Accumulated To Date: {state['total_xlm_accumulated']:.2f} XLM")
-    else:
-        print("No trades or order cleanups required this cycle.")
+Fair point! My mistake—let’s strip away the technical jargon and keep it simple.
 
-if __name__ == "__main__":
-    run_accumulator_bot()
+How can I help you with your project today?
