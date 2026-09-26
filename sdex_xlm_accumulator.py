@@ -19,6 +19,7 @@ STATE_FILE = "grid_state.json"
 NUM_TIERS = 10             # Splits available USDC into 10 tranches
 MIN_TRADE_USDC = 1.0       # Floor trade size ($1.00 minimum)
 PROFIT_MARGIN = 1.020      # +2.0% profit target per tranche
+DIP_THRESHOLD = 0.990      # Require 1.0% price drop from last entry to buy next tranche
 MAX_OFFER_AGE_HOURS = 24.0 # Auto-cancel limit orders older than 24h
 
 # --- STATE MANAGEMENT ---
@@ -137,16 +138,19 @@ def run_accumulator_bot():
     calculated_chunk = round(usdc_balance / NUM_TIERS, 2)
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
-    # 5. Open New Buy Tranche if balance permits
-    if usdc_balance >= trade_size_usdc:
+    # 5. Open New Buy Tranche ONLY if price dropped 1% below last entry
+    last_buy_price = state["open_positions"][-1]["buy_price"] if state["open_positions"] else None
+    is_price_lower = (last_buy_price is None) or (price <= last_buy_price * DIP_THRESHOLD)
+
+    if usdc_balance >= trade_size_usdc and is_price_lower:
         xlm_to_buy = round(trade_size_usdc / price, 2)
-        print(f"Opening Buy Tranche: Purchasing {xlm_to_buy} XLM @ ${price:.4f} (${trade_size_usdc:.2f} USDC)")
+        print(f"Dip Detected! Opening Buy Tranche: Purchasing {xlm_to_buy} XLM @ ${price:.4f} (${trade_size_usdc:.2f} USDC)")
 
         builder.append_manage_buy_offer_op(
             selling=USDC,
             buying=XLM,
             amount=str(xlm_to_buy),
-            price=str(round(price, 6)),  # Price in USDC per XLM
+            price=str(round(price, 6)),
             offer_id=0
         )
 
@@ -156,6 +160,9 @@ def run_accumulator_bot():
             "cost_usdc": trade_size_usdc
         })
         action_taken = True
+    elif last_buy_price and not is_price_lower:
+        target_buy_price = last_buy_price * DIP_THRESHOLD
+        print(f"Skipping buy: Current price (${price:.4f}) is higher than dip target (${target_buy_price:.4f}).")
 
     # 6. Single Batch Submit
     if action_taken:
