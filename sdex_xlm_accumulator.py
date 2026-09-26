@@ -10,7 +10,7 @@ public_key = kp.public_key
 
 server = Server("https://horizon.stellar.org")
 XLM = Asset.native()
-USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5XYG4DZ6N21555WKHD745E21A562PXRTHRHU")
+USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN")
 
 STATE_FILE = "grid_state.json"
 NUM_TIERS = 10             # Divide available capital into 10 equal parts
