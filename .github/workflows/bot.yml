@@ -1,0 +1,35 @@
+name: XLM SDEX Accumulator Bot
+
+on:
+  schedule:
+    # Runs automatically every 15 minutes
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Allows manual triggers from GitHub UI
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install stellar-sdk requests
+
+      - name: Run Accumulator Script
+        env:
+          STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
+        run: python sdex_xlm_accumulator.py
+
+      - name: Save Grid State Back to Repo
+        run: |
+          git config --global user.name 'GridBotRunner'
+          git config --global user.email 'bot@users.noreply.github.com'
+          git add grid_state.json
+          git commit -m "Update grid state [skip ci]" || exit 0
+          git push
