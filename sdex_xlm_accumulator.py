@@ -5,6 +5,9 @@ from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset
 
 # --- CONFIGURATION ---
 SECRET_KEY = os.getenv("STELLAR_SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("STELLAR_SECRET_KEY environment variable is missing.")
+
 kp = Keypair.from_secret(SECRET_KEY)
 public_key = kp.public_key
 
@@ -78,10 +81,10 @@ def run_accumulator_bot():
 
     state = load_state()
     
-    # Sequence account for transaction building
+    # Load sequence for transaction building
     account = server.load_account(public_key)
     
-    # Detailed account data for fetching balances
+    # Fetch account details for balances
     account_details = server.accounts().account_id(public_key).call()
 
     builder = TransactionBuilder(
@@ -112,7 +115,7 @@ def run_accumulator_bot():
             xlm_to_sell = round(initial_usdc_cost / price, 2)
             xlm_retained = round(pos["xlm_amount"] - xlm_to_sell, 2)
 
-            print(f"Target Hit! Selling {xlm_to_sell} XLM @ ${price:.4f} to reclaim${initial_usdc_cost:.2f} USDC.")
+            print(f"Target Hit! Selling {xlm_to_sell} XLM @ ${price:.4f} to reclaim ${initial_usdc_cost:.2f} USDC.")
             print(f"Retained XLM Profit: {xlm_retained} XLM")
 
             builder.append_manage_sell_offer_op(
@@ -160,6 +163,9 @@ def run_accumulator_bot():
         tx.sign(kp)
         res = server.submit_transaction(tx)
         save_state(state)
-Fair point! My mistake—let’s strip away the technical jargon and keep it simple.
+        print("Transaction submitted successfully.")
+    else:
+        print("No actions required this cycle.")
 
-How can I help you with your project today?
+if __name__ == "__main__":
+    run_accumulator_bot()
