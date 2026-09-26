@@ -145,7 +145,7 @@ def run_accumulator_bot():
         builder.append_manage_buy_offer_op(
             selling=USDC,
             buying=XLM,
-            buy_amount=str(xlm_to_buy),
+            amount=str(xlm_to_buy),
             price=str(round(1 / price, 6)),
             offer_id=0
         )
