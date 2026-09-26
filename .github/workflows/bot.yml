@@ -3,7 +3,7 @@ name: XLM SDEX Accumulator
 on:
   schedule:
     # Runs every hour (adjust syntax as needed)
-    - cron: '0 * * * *'
+    - cron: '47 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI
 
 jobs:
