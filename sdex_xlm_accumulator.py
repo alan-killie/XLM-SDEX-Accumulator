@@ -13,12 +13,12 @@ public_key = kp.public_key
 
 server = Server("https://horizon.stellar.org")
 XLM = Asset.native()
-USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN") # Mainnet Circle USDC
+USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN") # Circle Mainnet USDC
 
 STATE_FILE = "grid_state.json"
-NUM_TIERS = 10             # Divide available capital into 10 equal parts
-MIN_TRADE_USDC = 1.0       # Floor trade size ($1.00 minimum for SDEX)
-PROFIT_MARGIN = 1.020      # +2.0% profit target per tier
+NUM_TIERS = 10             # Splits available USDC into 10 tranches
+MIN_TRADE_USDC = 1.0       # Floor trade size ($1.00 minimum)
+PROFIT_MARGIN = 1.020      # +2.0% profit target per tranche
 MAX_OFFER_AGE_HOURS = 24.0 # Auto-cancel limit orders older than 24h
 
 # --- STATE MANAGEMENT ---
@@ -62,7 +62,7 @@ def cancel_stale_offers(builder):
                 builder.append_manage_sell_offer_op(
                     selling=parse_asset(offer["selling"]),
                     buying=parse_asset(offer["buying"]),
-                    amount="0",  # Amount=0 cancels open offer on-chain
+                    amount="0",
                     price=offer["price"],
                     offer_id=offer_id
                 )
@@ -133,20 +133,20 @@ def run_accumulator_bot():
 
     state["open_positions"] = remaining_positions
 
-    # 4. Calculate Dynamic Trade Size based on available USDC
+    # 4. Calculate Dynamic Trade Size ($10 USDC / 10 = $1.00 per tranche)
     calculated_chunk = round(usdc_balance / NUM_TIERS, 2)
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
-    # 5. Open New Buy Tier if balance permits
+    # 5. Open New Buy Tranche if balance permits
     if usdc_balance >= trade_size_usdc:
         xlm_to_buy = round(trade_size_usdc / price, 2)
-        print(f"Opening Buy Tier: Purchasing {xlm_to_buy} XLM @ ${price:.4f} (${trade_size_usdc:.2f} USDC)")
+        print(f"Opening Buy Tranche: Purchasing {xlm_to_buy} XLM @ ${price:.4f} (${trade_size_usdc:.2f} USDC)")
 
         builder.append_manage_buy_offer_op(
             selling=USDC,
             buying=XLM,
             amount=str(xlm_to_buy),
-            price=str(round(1 / price, 6)),
+            price=str(round(price, 6)),  # Price in USDC per XLM
             offer_id=0
         )
 
