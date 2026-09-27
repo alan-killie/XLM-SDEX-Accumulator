@@ -9,6 +9,11 @@
       "buy_price": 0.2174953,
       "xlm_amount": 4.6,
       "cost_usdc": 1.0
+    },
+    {
+      "buy_price": 0.2143108,
+      "xlm_amount": 4.67,
+      "cost_usdc": 1.0
     }
   ],
   "total_xlm_accumulated": 0.1
