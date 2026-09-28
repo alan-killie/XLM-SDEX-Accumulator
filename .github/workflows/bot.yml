@@ -2,8 +2,7 @@ name: XLM SDEX Accumulator
 
 on:
   schedule:
-    # Runs once an hour (minutes 17) to stay off-peak
-    - cron: '17 * * * *'
+    - cron: '8,30,50 * * * *'
   workflow_dispatch:
 
 jobs:
