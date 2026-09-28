@@ -45,6 +45,46 @@ def get_mid_price():
         return None
     return (float(bids[0]["price"]) + float(asks[0]["price"])) / 2
 
+def reconcile_executed_trades(state):
+    """
+    Fetches recent executed trades from Horizon and records newly filled 
+    buy orders into state['open_positions'].
+    """
+    try:
+        trades_page = server.trades().for_account(public_key).order(desc=True).limit(10).call()
+        records = trades_page.get("_embedded", {}).get("records", [])
+        
+        updated = False
+        for trade in reversed(records):  # Process oldest to newest
+            bought_asset = trade.get("bought_asset_type")
+            sold_asset = trade.get("sold_asset_code")
+            
+            # Check if this trade was us buying native XLM with USDC
+            if bought_asset == "native" and sold_asset == "USDC":
+                xlm_bought = float(trade["bought_amount"])
+                usdc_spent = float(trade["sold_amount"])
+                fill_price = usdc_spent / xlm_bought if xlm_bought > 0 else 0.0
+
+                # Check if this fill is already tracked in open_positions
+                already_logged = any(
+                    abs(pos["buy_price"] - fill_price) < 0.0001 and abs(pos["xlm_amount"] - xlm_bought) < 0.001
+                    for pos in state.get("open_positions", [])
+                )
+
+                if not already_logged:
+                    print(f"Detected On-Chain Fill: {xlm_bought:.7f} XLM @ ${fill_price:.4f}")
+                    state["open_positions"].append({
+                        "buy_price": fill_price,
+                        "xlm_amount": xlm_bought,
+                        "cost_usdc": usdc_spent
+                    })
+                    updated = True
+        
+        if updated:
+            save_state(state)
+    except Exception as e:
+        print(f"Trade reconciliation skipped: {e}")
+
 def sync_and_clean_offers(builder, current_price):
     cancellation_count = 0
     try:
@@ -59,15 +99,12 @@ def sync_and_clean_offers(builder, current_price):
             created_at = datetime.fromisoformat(time_str).timestamp()
             age_hours = (current_time - created_at) / 3600.0
 
-            # Calculate upward price drift away from active buy offer
             drift = (current_price - offer_price) / offer_price if offer_price > 0 else 0
 
             if age_hours >= MAX_OFFER_AGE_HOURS or drift >= DRIFT_THRESHOLD:
                 print(f"Cancelling stale/drifted Offer ID {offer_id} (Age: {age_hours:.1f}h, Drift: {drift*100:.1f}%)")
                 
                 selling_asset = parse_asset(offer["selling"])
-                buying_asset = parse_asset(offer["buying"])
-
                 if selling_asset == XLM:
                     builder.append_manage_sell_offer_op(
                         selling=XLM, buying=USDC, amount="0", price=offer["price"], offer_id=offer_id
@@ -89,6 +126,10 @@ def run_accumulator_bot():
         return
 
     state = load_state()
+
+    # --- RECONCILE RECENT TRADES ON STARTUP ---
+    reconcile_executed_trades(state)
+
     account = server.load_account(public_key)
     account_details = server.accounts().account_id(public_key).call()
 
@@ -111,7 +152,6 @@ def run_accumulator_bot():
         if b.get("asset_code") == "USDC":
             usdc_balance = float(b["balance"])
         elif b.get("asset_type") == "native":
-            # Reserve 2 XLM minimum buffer for account base + subentries
             xlm_balance = max(0.0, float(b["balance"]) - 2.0)
 
     pending_positions = []
@@ -158,8 +198,6 @@ def run_accumulator_bot():
             offer_id=0
         )
         action_taken = True
-        # NOTE: Position is NOT added to grid_state.json here.
-        # It will only be appended after DEX trade execution is confirmed on a subsequent run.
 
     # 5. Submit Transaction
     if action_taken:
