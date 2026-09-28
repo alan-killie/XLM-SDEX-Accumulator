@@ -1,9 +1,9 @@
 import os
 import time
 import json
+from datetime import datetime, timezone
 from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset
 
-# --- CONFIGURATION ---
 SECRET_KEY = os.getenv("STELLAR_SECRET_KEY")
 if not SECRET_KEY:
     raise ValueError("STELLAR_SECRET_KEY environment variable is missing.")
@@ -13,16 +13,15 @@ public_key = kp.public_key
 
 server = Server("https://horizon.stellar.org")
 XLM = Asset.native()
-USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN") # Circle Mainnet USDC
+USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN")
 
 STATE_FILE = "grid_state.json"
-NUM_TIERS = 10             # Splits available USDC into 10 tranches
-MIN_TRADE_USDC = 1.0       # Floor trade size ($1.00 minimum)
-PROFIT_MARGIN = 1.020      # +2.0% profit target per tranche
-DIP_THRESHOLD = 0.990      # Require 1.0% price drop from last entry to buy next tranche
-MAX_OFFER_AGE_HOURS = 24.0 # Auto-cancel limit orders older than 24h
+NUM_TIERS = 10
+MIN_TRADE_USDC = 1.0
+PROFIT_MARGIN = 1.020
+DIP_THRESHOLD = 0.990
+MAX_OFFER_AGE_HOURS = 24.0
 
-# --- STATE MANAGEMENT ---
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -45,7 +44,6 @@ def get_mid_price():
         return None
     return (float(bids[0]["price"]) + float(asks[0]["price"])) / 2
 
-# --- AUTO-CANCEL STALE SDEX OFFERS ---
 def cancel_stale_offers(builder):
     cancellation_count = 0
     try:
@@ -55,7 +53,8 @@ def cancel_stale_offers(builder):
 
         for offer in open_offers:
             offer_id = int(offer["id"])
-            created_at = time.mktime(time.strptime(offer["last_modified_time"], "%Y-%m-%dT%H:%M:%SZ"))
+            time_str = offer["last_modified_time"].replace("Z", "+00:00")
+            created_at = datetime.fromisoformat(time_str).timestamp()
             age_hours = (current_time - created_at) / 3600.0
 
             if age_hours >= MAX_OFFER_AGE_HOURS:
@@ -73,7 +72,6 @@ def cancel_stale_offers(builder):
         
     return cancellation_count
 
-# --- MAIN ENGINE ---
 def run_accumulator_bot():
     price = get_mid_price()
     if not price:
@@ -81,11 +79,7 @@ def run_accumulator_bot():
         return
 
     state = load_state()
-    
-    # Load sequence for transaction building
     account = server.load_account(public_key)
-    
-    # Fetch account details for balances
     account_details = server.accounts().account_id(public_key).call()
 
     builder = TransactionBuilder(
@@ -95,82 +89,81 @@ def run_accumulator_bot():
     )
 
     action_taken = False
-
-    # 1. Clean up stale orders
     if cancel_stale_offers(builder) > 0:
         action_taken = True
 
-    # 2. Check available USDC balance
     usdc_balance = 0.0
     for b in account_details.get("balances", []):
         if b.get("asset_code") == "USDC":
             usdc_balance = float(b["balance"])
 
-    # 3. Process Target Hits (+2% -> Reclaim principal USDC, retain XLM profit)
-    remaining_positions = []
+    # Stage potential state updates separately from current state
+    pending_positions = []
+    accumulated_profit_delta = 0.0
+
     for pos in state["open_positions"]:
         target_sell_price = pos["buy_price"] * PROFIT_MARGIN
 
         if price >= target_sell_price:
             initial_usdc_cost = pos["cost_usdc"]
-            xlm_to_sell = round(initial_usdc_cost / price, 2)
-            xlm_retained = round(pos["xlm_amount"] - xlm_to_sell, 2)
+            xlm_to_sell = initial_usdc_cost / price
+            xlm_retained = pos["xlm_amount"] - xlm_to_sell
 
-            print(f"Target Hit! Selling {xlm_to_sell} XLM @ ${price:.4f} to reclaim ${initial_usdc_cost:.2f} USDC.")
-            print(f"Retained XLM Profit: {xlm_retained} XLM")
+            print(f"Target Hit! Selling {xlm_to_sell:.7f} XLM @ ${price:.4f}")
 
             builder.append_manage_sell_offer_op(
                 selling=XLM,
                 buying=USDC,
-                amount=str(xlm_to_sell),
-                price=str(round(price, 4)),
+                amount=f"{xlm_to_sell:.7f}",
+                price=f"{price:.6f}",
                 offer_id=0
             )
-            
-            state["total_xlm_accumulated"] += max(0, xlm_retained)
+            accumulated_profit_delta += max(0.0, xlm_retained)
             action_taken = True
         else:
-            remaining_positions.append(pos)
+            pending_positions.append(pos)
 
-    state["open_positions"] = remaining_positions
-
-    # 4. Calculate Dynamic Trade Size ($10 USDC / 10 = $1.00 per tranche)
-    calculated_chunk = round(usdc_balance / NUM_TIERS, 2)
+    calculated_chunk = usdc_balance / NUM_TIERS
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
-    # 5. Open New Buy Tranche ONLY if price dropped 1% below last entry
-    last_buy_price = state["open_positions"][-1]["buy_price"] if state["open_positions"] else None
+    last_buy_price = pending_positions[-1]["buy_price"] if pending_positions else None
     is_price_lower = (last_buy_price is None) or (price <= last_buy_price * DIP_THRESHOLD)
 
     if usdc_balance >= trade_size_usdc and is_price_lower:
-        xlm_to_buy = round(trade_size_usdc / price, 2)
-        print(f"Dip Detected! Opening Buy Tranche: Purchasing {xlm_to_buy} XLM @ ${price:.4f} (${trade_size_usdc:.2f} USDC)")
+        # Place buy offer 1% below mid-price so it sits on the book as a maker order
+        target_buy_price = price * DIP_THRESHOLD
+        xlm_to_buy = trade_size_usdc / target_buy_price
+        
+        print(f"Dip Detected! Placing Buy Offer: {xlm_to_buy:.7f} XLM @ ${target_buy_price:.4f}")
 
         builder.append_manage_buy_offer_op(
             selling=USDC,
             buying=XLM,
-            amount=str(xlm_to_buy),
-            price=str(round(price, 6)),
+            amount=f"{xlm_to_buy:.7f}",
+            price=f"{target_buy_price:.6f}",
             offer_id=0
         )
 
-        state["open_positions"].append({
-            "buy_price": price,
+        pending_positions.append({
+            "buy_price": target_buy_price,
             "xlm_amount": xlm_to_buy,
             "cost_usdc": trade_size_usdc
         })
         action_taken = True
-    elif last_buy_price and not is_price_lower:
-        target_buy_price = last_buy_price * DIP_THRESHOLD
-        print(f"Skipping buy: Current price (${price:.4f}) is higher than dip target (${target_buy_price:.4f}).")
 
-    # 6. Single Batch Submit
     if action_taken:
-        tx = builder.set_timeout(30).build()
-        tx.sign(kp)
-        res = server.submit_transaction(tx)
-        save_state(state)
-        print("Transaction submitted successfully.")
+        try:
+            tx = builder.set_timeout(30).build()
+            tx.sign(kp)
+            res = server.submit_transaction(tx)
+            
+            # Update state ONLY after successful submission
+            state["open_positions"] = pending_positions
+            state["total_xlm_accumulated"] += accumulated_profit_delta
+            save_state(state)
+            print("Transaction submitted successfully.")
+        except Exception as e:
+            print(f"Transaction submission failed: {e}")
     else:
         print("No actions required this cycle.")
 
