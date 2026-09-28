@@ -2,8 +2,10 @@ name: XLM SDEX Accumulator
 
 on:
   schedule:
-    - cron: '8,30,50 * * * *'
+#    - cron: '8,30,50 * * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types: [run-bot]
 
 jobs:
   run-bot:
