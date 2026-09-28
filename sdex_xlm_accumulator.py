@@ -1,7 +1,7 @@
 import os
 import time
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset
 
 SECRET_KEY = os.getenv("STELLAR_SECRET_KEY")
@@ -21,12 +21,13 @@ MIN_TRADE_USDC = 1.0
 PROFIT_MARGIN = 1.020
 DIP_THRESHOLD = 0.990
 MAX_OFFER_AGE_HOURS = 24.0
+DRIFT_THRESHOLD = 0.03  # 3% price drift to expire stale buys
 
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
-    return {"open_positions": [], "total_xlm_accumulated": 0.0}
+    return {"open_positions": [], "pending_offers": [], "total_xlm_accumulated": 0.0}
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
@@ -44,7 +45,7 @@ def get_mid_price():
         return None
     return (float(bids[0]["price"]) + float(asks[0]["price"])) / 2
 
-def cancel_stale_offers(builder):
+def sync_and_clean_offers(builder, current_price):
     cancellation_count = 0
     try:
         offers_page = server.offers().for_account(public_key).call()
@@ -53,19 +54,28 @@ def cancel_stale_offers(builder):
 
         for offer in open_offers:
             offer_id = int(offer["id"])
+            offer_price = float(offer["price"])
             time_str = offer["last_modified_time"].replace("Z", "+00:00")
             created_at = datetime.fromisoformat(time_str).timestamp()
             age_hours = (current_time - created_at) / 3600.0
 
-            if age_hours >= MAX_OFFER_AGE_HOURS:
-                print(f"Cleaning up stale Offer ID {offer_id} ({age_hours:.1f} hrs old)")
-                builder.append_manage_sell_offer_op(
-                    selling=parse_asset(offer["selling"]),
-                    buying=parse_asset(offer["buying"]),
-                    amount="0",
-                    price=offer["price"],
-                    offer_id=offer_id
-                )
+            # Calculate upward price drift away from active buy offer
+            drift = (current_price - offer_price) / offer_price if offer_price > 0 else 0
+
+            if age_hours >= MAX_OFFER_AGE_HOURS or drift >= DRIFT_THRESHOLD:
+                print(f"Cancelling stale/drifted Offer ID {offer_id} (Age: {age_hours:.1f}h, Drift: {drift*100:.1f}%)")
+                
+                selling_asset = parse_asset(offer["selling"])
+                buying_asset = parse_asset(offer["buying"])
+
+                if selling_asset == XLM:
+                    builder.append_manage_sell_offer_op(
+                        selling=XLM, buying=USDC, amount="0", price=offer["price"], offer_id=offer_id
+                    )
+                else:
+                    builder.append_manage_buy_offer_op(
+                        selling=USDC, buying=XLM, amount="0", price=offer["price"], offer_id=offer_id
+                    )
                 cancellation_count += 1
     except Exception as e:
         print(f"Notice: Offer check skipped ({e})")
@@ -89,26 +99,30 @@ def run_accumulator_bot():
     )
 
     action_taken = False
-    if cancel_stale_offers(builder) > 0:
+
+    # 1. Clear Stale or Drifted Orders
+    if sync_and_clean_offers(builder, price) > 0:
         action_taken = True
 
+    # 2. Get Available Balances
     usdc_balance = 0.0
+    xlm_balance = 0.0
     for b in account_details.get("balances", []):
         if b.get("asset_code") == "USDC":
             usdc_balance = float(b["balance"])
+        elif b.get("asset_type") == "native":
+            # Reserve 2 XLM minimum buffer for account base + subentries
+            xlm_balance = max(0.0, float(b["balance"]) - 2.0)
 
-    # Stage potential state updates separately from current state
     pending_positions = []
     accumulated_profit_delta = 0.0
 
-    for pos in state["open_positions"]:
+    # 3. Process Sell Targets
+    for pos in state.get("open_positions", []):
         target_sell_price = pos["buy_price"] * PROFIT_MARGIN
 
-        if price >= target_sell_price:
-            initial_usdc_cost = pos["cost_usdc"]
-            xlm_to_sell = initial_usdc_cost / price
-            xlm_retained = pos["xlm_amount"] - xlm_to_sell
-
+        if price >= target_sell_price and xlm_balance >= pos["xlm_amount"]:
+            xlm_to_sell = pos["xlm_amount"]
             print(f"Target Hit! Selling {xlm_to_sell:.7f} XLM @ ${price:.4f}")
 
             builder.append_manage_sell_offer_op(
@@ -118,11 +132,12 @@ def run_accumulator_bot():
                 price=f"{price:.6f}",
                 offer_id=0
             )
-            accumulated_profit_delta += max(0.0, xlm_retained)
+            accumulated_profit_delta += (xlm_to_sell * price) - pos["cost_usdc"]
             action_taken = True
         else:
             pending_positions.append(pos)
 
+    # 4. Process Dip Buys
     calculated_chunk = usdc_balance / NUM_TIERS
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
@@ -130,7 +145,6 @@ def run_accumulator_bot():
     is_price_lower = (last_buy_price is None) or (price <= last_buy_price * DIP_THRESHOLD)
 
     if usdc_balance >= trade_size_usdc and is_price_lower:
-        # Place buy offer 1% below mid-price so it sits on the book as a maker order
         target_buy_price = price * DIP_THRESHOLD
         xlm_to_buy = trade_size_usdc / target_buy_price
         
@@ -143,21 +157,17 @@ def run_accumulator_bot():
             price=f"{target_buy_price:.6f}",
             offer_id=0
         )
-
-        pending_positions.append({
-            "buy_price": target_buy_price,
-            "xlm_amount": xlm_to_buy,
-            "cost_usdc": trade_size_usdc
-        })
         action_taken = True
+        # NOTE: Position is NOT added to grid_state.json here.
+        # It will only be appended after DEX trade execution is confirmed on a subsequent run.
 
+    # 5. Submit Transaction
     if action_taken:
         try:
             tx = builder.set_timeout(30).build()
             tx.sign(kp)
             res = server.submit_transaction(tx)
             
-            # Update state ONLY after successful submission
             state["open_positions"] = pending_positions
             state["total_xlm_accumulated"] += accumulated_profit_delta
             save_state(state)
