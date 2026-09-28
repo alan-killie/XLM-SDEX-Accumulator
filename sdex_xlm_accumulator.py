@@ -59,15 +59,13 @@ def reconcile_executed_trades(state):
             bought_asset = trade.get("bought_asset_type")
             sold_asset = trade.get("sold_asset_code")
             
-            # Check if this trade was us buying native XLM with USDC
             if bought_asset == "native" and sold_asset == "USDC":
                 xlm_bought = float(trade["bought_amount"])
                 usdc_spent = float(trade["sold_amount"])
                 fill_price = usdc_spent / xlm_bought if xlm_bought > 0 else 0.0
 
-                # Check if this fill is already tracked in open_positions
                 already_logged = any(
-                    abs(pos["buy_price"] - fill_price) < 0.0001 and abs(pos["xlm_amount"] - xlm_bought) < 0.001
+                    abs(pos.get("buy_price", 0.0) - fill_price) < 0.0001 and abs(pos.get("xlm_amount", 0.0) - xlm_bought) < 0.001
                     for pos in state.get("open_positions", [])
                 )
 
@@ -127,7 +125,7 @@ def run_accumulator_bot():
 
     state = load_state()
 
-    # --- RECONCILE RECENT TRADES ON STARTUP ---
+    # 1. Reconcile On-Chain Fills First
     reconcile_executed_trades(state)
 
     account = server.load_account(public_key)
@@ -141,11 +139,11 @@ def run_accumulator_bot():
 
     action_taken = False
 
-    # 1. Clear Stale or Drifted Orders
+    # 2. Clear Stale or Drifted Orders
     if sync_and_clean_offers(builder, price) > 0:
         action_taken = True
 
-    # 2. Get Available Balances
+    # 3. Get Available Balances
     usdc_balance = 0.0
     xlm_balance = 0.0
     for b in account_details.get("balances", []):
@@ -154,10 +152,10 @@ def run_accumulator_bot():
         elif b.get("asset_type") == "native":
             xlm_balance = max(0.0, float(b["balance"]) - 2.0)
 
-    pending_positions = []
+    # 4. Process Sell Targets (Mutate active state directly)
+    remaining_positions = []
     accumulated_profit_delta = 0.0
 
-    # 3. Process Sell Targets
     for pos in state.get("open_positions", []):
         target_sell_price = pos["buy_price"] * PROFIT_MARGIN
 
@@ -165,23 +163,28 @@ def run_accumulator_bot():
             xlm_to_sell = pos["xlm_amount"]
             print(f"Target Hit! Selling {xlm_to_sell:.7f} XLM @ ${price:.4f}")
 
+            # Sell slightly below mid-price to ensure instant taker execution
             builder.append_manage_sell_offer_op(
                 selling=XLM,
                 buying=USDC,
                 amount=f"{xlm_to_sell:.7f}",
-                price=f"{price:.6f}",
+                price=f"{price * 0.999:.6f}",
                 offer_id=0
             )
             accumulated_profit_delta += (xlm_to_sell * price) - pos["cost_usdc"]
+            xlm_balance -= xlm_to_sell
             action_taken = True
         else:
-            pending_positions.append(pos)
+            remaining_positions.append(pos)
 
-    # 4. Process Dip Buys
+    # Update state positions immediately so we don't drop newly reconciled items
+    state["open_positions"] = remaining_positions
+
+    # 5. Process Dip Buys
     calculated_chunk = usdc_balance / NUM_TIERS
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
-    last_buy_price = pending_positions[-1]["buy_price"] if pending_positions else None
+    last_buy_price = state["open_positions"][-1]["buy_price"] if state["open_positions"] else None
     is_price_lower = (last_buy_price is None) or (price <= last_buy_price * DIP_THRESHOLD)
 
     if usdc_balance >= trade_size_usdc and is_price_lower:
@@ -199,14 +202,13 @@ def run_accumulator_bot():
         )
         action_taken = True
 
-    # 5. Submit Transaction
+    # 6. Submit Transaction
     if action_taken:
         try:
             tx = builder.set_timeout(30).build()
             tx.sign(kp)
             res = server.submit_transaction(tx)
             
-            state["open_positions"] = pending_positions
             state["total_xlm_accumulated"] += accumulated_profit_delta
             save_state(state)
             print("Transaction submitted successfully.")
