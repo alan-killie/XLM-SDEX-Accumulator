@@ -1,4 +1,31 @@
 {
-  "open_positions": [],
+  "open_positions": [
+    {
+      "buy_price": 0.225411,
+      "xlm_amount": 4.4363478,
+      "cost_usdc": 1.0000016
+    },
+    {
+      "buy_price": 0.22598,
+      "xlm_amount": 4.4251756,
+      "cost_usdc": 1.0000012
+    },
+    {
+      "buy_price": 0.226439,
+      "xlm_amount": 4.4161986,
+      "cost_usdc": 0.9999995
+    },
+    {
+      "buy_price": 0.227504,
+      "xlm_amount": 4.3955205,
+      "cost_usdc": 0.9999985
+    },
+    {
+      "buy_price": 0.226828,
+      "xlm_amount": 4.8653893,
+      "cost_usdc": 1.1036065
+    }
+  ],
+  "pending_offers": [],
   "total_xlm_accumulated": 1.3137272736384564
 }
