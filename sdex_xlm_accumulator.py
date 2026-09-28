@@ -20,8 +20,8 @@ NUM_TIERS = 10
 MIN_TRADE_USDC = 1.0
 PROFIT_MARGIN = 1.020
 DIP_THRESHOLD = 0.990
-MAX_OFFER_AGE_HOURS = 2.0
-DRIFT_THRESHOLD = 0.02  # 3% price drift to expire stale buys
+MAX_OFFER_AGE_HOURS = 1.0
+DRIFT_THRESHOLD = 0.015  # 1.5% price drift to expire stale buys
 
 def load_state():
     if os.path.exists(STATE_FILE):
