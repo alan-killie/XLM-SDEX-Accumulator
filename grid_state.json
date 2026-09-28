@@ -1,15 +1,10 @@
 {
   "open_positions": [
     {
-      "buy_price": 0.22041705,
-      "xlm_amount": 4.54,
-      "cost_usdc": 1.0
-    },
-    {
-      "buy_price": 0.2174953,
-      "xlm_amount": 4.6,
+      "buy_price": 0.2234490885,
+      "xlm_amount": 4.475292366207168,
       "cost_usdc": 1.0
     }
   ],
-  "total_xlm_accumulated": 0.43000000000000005
+  "total_xlm_accumulated": 0.7089211149098057
 }
