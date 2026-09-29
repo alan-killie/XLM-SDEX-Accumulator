@@ -3,6 +3,9 @@ name: Initialize Clean Grid State
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   seed-state:
     runs-on: ubuntu-latest
