@@ -19,12 +19,12 @@ USDC = Asset("USDC", USDC_ISSUER)
 
 STATE_FILE = "grid_state.json"
 
-TOTAL_CAPITAL_USDC = 9.0   # Total USDC working capital
-NUM_TIERS = 10               # 10 tranches ($0.90 USDC per trade)
-PROFIT_MARGIN = 1.020        # +2.0% profit target
-DIP_THRESHOLD = 0.995        # -0.5% buy trigger below mid-price
-REPOSITION_DRIFT = 0.005     # Reposition buy offer if mid-price drifts >0.5%
-MIN_SELL_USDC = 0.50         # Minimum $0.50 fill before posting sell offer
+TOTAL_CAPITAL_USDC = 10.0   # Total USDC working capital
+NUM_TIERS = 10              # 10 tranches ($1.00 USDC per trade)
+PROFIT_MARGIN = 1.020       # +2.0% profit target
+DIP_THRESHOLD = 0.995       # -0.5% buy trigger below mid-price
+REPOSITION_DRIFT = 0.005    # Reposition buy offer if mid-price drifts >0.5%
+MIN_SELL_USDC = 0.50        # Minimum $0.50 fill before posting sell offer
 
 
 def load_state():
@@ -65,8 +65,9 @@ def is_circle_usdc(asset_type, code, issuer):
 
 def reconcile_executed_trades(builder, state):
     """
-    Scans new fills using Horizon cursor. Processes partial fills and stages 
-    passive sell offers (max 2 per batch to prevent tx size limits).
+    Scans new fills using Horizon cursor.
+    - Buy fills: Stages passive sell offers and tracks open positions with pending gains.
+    - Sell fills: Realizes XLM gain into total_xlm_accumulated once USDC principal is recovered.
     """
     try:
         if not state.get("last_trade_cursor"):
@@ -90,7 +91,7 @@ def reconcile_executed_trades(builder, state):
 
         for trade in records:
             state["last_trade_cursor"] = trade["paging_token"]
-            
+
             base_is_xlm = (trade.get("base_asset_type") == "native")
             counter_is_xlm = (trade.get("counter_asset_type") == "native")
             base_is_usdc = is_circle_usdc(
@@ -110,6 +111,12 @@ def reconcile_executed_trades(builder, state):
             bought_via_base = base_is_xlm and ((is_base and not base_is_seller) or (is_counter and base_is_seller))
             bought_via_counter = counter_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
 
+            sold_via_base = base_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
+            sold_via_counter = counter_is_xlm and ((is_base and not base_is_seller) or (is_counter and *is_base if false else not base_is_seller))
+
+            # --------------------------------------------------
+            # 1. HANDLE BUY FILL (Stage Sell Offer + Track Pending Position)
+            # --------------------------------------------------
             if bought_via_base or bought_via_counter:
                 if base_is_xlm:
                     xlm_bought = float(trade.get("base_amount", 0))
@@ -123,10 +130,7 @@ def reconcile_executed_trades(builder, state):
                     target_sell_price = round(buy_price * PROFIT_MARGIN, 6)
 
                     xlm_to_sell = round(usdc_paid / target_sell_price, 7)
-                    xlm_retained = round(xlm_bought - xlm_to_sell, 7)
-
-                    if xlm_retained > 0:
-                        state["total_xlm_accumulated"] += xlm_retained
+                    pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
 
                     if usdc_paid >= MIN_SELL_USDC:
                         if staged_sell_count < 2:
@@ -147,10 +151,26 @@ def reconcile_executed_trades(builder, state):
                         "buy_price": round(buy_price, 6),
                         "cost_usdc": round(usdc_paid, 6),
                         "xlm_to_sell": xlm_to_sell,
-                        "xlm_retained": xlm_retained,
+                        "pending_xlm_gain": pending_xlm_gain,
                         "target_sell_price": target_sell_price,
                         "created_at": trade.get("ledger_close_time")
                     })
+
+            # --------------------------------------------------
+            # 2. HANDLE SELL FILL (Realize Profit + Close Position)
+            # --------------------------------------------------
+            elif sold_via_base or sold_via_counter:
+                if state["open_positions"]:
+                    closed_pos = state["open_positions"].pop(0)
+                    realized_gain = closed_pos.get("pending_xlm_gain", 0.0)
+                    
+                    state["total_xlm_accumulated"] = round(
+                        state["total_xlm_accumulated"] + realized_gain, 7
+                    )
+                    print(
+                        f"POSITION CLOSED: Recovered ${closed_pos['cost_usdc']:.2f} USDC. "
+                        f"Realized +{realized_gain:.7f} XLM gain."
+                    )
 
     except Exception as e:
         print(f"Notice: Trade reconciliation check failed ({e})")
@@ -159,7 +179,7 @@ def reconcile_executed_trades(builder, state):
 def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     """
     Cancels lingering buy orders and places a fresh trailing bid
-    in a single atomic transaction. Correctly parses nested Horizon offer asset structures.
+    in a single atomic transaction.
     """
     target_buy_price = round(current_price * DIP_THRESHOLD, 6)
     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
@@ -167,7 +187,6 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     open_offers = server.offers().for_account(public_key).limit(50).call().get("_embedded", {}).get("records", [])
     active_buy_offer = None
 
-    # Correctly identify BUY offers (selling USDC, buying XLM) via nested Horizon objects
     for offer in open_offers:
         selling_asset = offer.get("selling", {})
         buying_asset = offer.get("buying", {})
@@ -184,30 +203,23 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
 
     if active_buy_offer:
         offer_id = int(active_buy_offer["id"])
-        
-        # Horizon price = XLM / USDC ratio; convert to USDC / XLM
         xlm_per_usdc = float(active_buy_offer["price"])
         existing_buy_price = 1.0 / xlm_per_usdc if xlm_per_usdc > 0 else 0.0
 
         drift = abs(current_price - (existing_buy_price / DIP_THRESHOLD)) / current_price
 
         if drift >= REPOSITION_DRIFT:
-            # Calculate USDC locked in this buy offer (remaining XLM to buy * buy price)
             xlm_remaining = float(active_buy_offer["amount"])
             usdc_locked_in_offer = xlm_remaining * existing_buy_price
-            
-            # Total usable USDC once Op 1 cancels the offer
             effective_usdc = liquid_usdc + usdc_locked_in_offer
 
             if effective_usdc >= tranche_size_usdc:
                 print(f"Trailing Buy: Clearing Buy Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
                 
-                # Op 1: Cancel old buy offer
                 builder.append_manage_buy_offer_op(
                     selling=USDC, buying=XLM, amount="0", price=active_buy_offer["price"], offer_id=offer_id
                 )
                 
-                # Op 2: Place new buy offer
                 xlm_to_buy = tranche_size_usdc / target_buy_price
                 builder.append_manage_buy_offer_op(
                     selling=USDC,
@@ -220,7 +232,6 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             else:
                 print(f"Insufficient USDC (${effective_usdc:.2f}) to reposition buy offer.")
     else:
-        # No open buy offer found; place new bid if liquid USDC is available
         if liquid_usdc >= tranche_size_usdc and len(state["open_positions"]) < NUM_TIERS:
             xlm_to_buy = tranche_size_usdc / target_buy_price
             print(f"Trailing Buy: Placing new bid for {xlm_to_buy:.4f} XLM @ ${target_buy_price:.4f}")
@@ -258,12 +269,12 @@ def run_accumulator_bot():
 
     action_taken = False
 
-    # 1. Reconcile executed fills first
+    # 1. Reconcile fills (stage sell orders / realize gains)
     reconcile_executed_trades(builder, state)
     if len(builder.operations) > 0:
         action_taken = True
 
-    # 2. Calculate LIQUID USDC (Total Balance - Selling Liabilities)
+    # 2. Calculate liquid USDC balance
     liquid_usdc = 0.0
     for b in account_details.get("balances", []):
         if b.get("asset_code") == "USDC" and b.get("asset_issuer") == USDC_ISSUER:
@@ -275,7 +286,7 @@ def run_accumulator_bot():
     if manage_trailing_buy_offer(builder, price, state, liquid_usdc):
         action_taken = True
 
-    # 4. Submit multi-operation transaction envelope
+    # 4. Single atomic submit
     if action_taken:
         try:
             tx = builder.set_timeout(180).build()
