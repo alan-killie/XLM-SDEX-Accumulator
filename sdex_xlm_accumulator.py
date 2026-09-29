@@ -67,10 +67,15 @@ def get_mid_price():
         return None
 
 
+USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+
+def is_circle_usdc(asset_type, code, issuer):
+    return asset_type != "native" and code == "USDC" and issuer == USDC_ISSUER
+
 def reconcile_executed_trades(state):
     """
     Scans recent on-chain trades for the account and populates open_positions
-    for newly executed XLM buy trades, handling both base and counter asset orientations.
+    ONLY for XLM / Circle-USDC pair trades.
     """
     try:
         trades_page = server.trades().for_account(public_key).limit(20).call()
@@ -79,29 +84,40 @@ def reconcile_executed_trades(state):
         for trade in records:
             trade_id = str(trade["id"])
 
-            # Skip already processed trades
             if trade_id in state.get("processed_trade_ids", []):
+                continue
+
+            base_is_xlm = (trade.get("base_asset_type") == "native")
+            counter_is_xlm = (trade.get("counter_asset_type") == "native")
+
+            base_is_usdc = is_circle_usdc(
+                trade.get("base_asset_type"),
+                trade.get("base_asset_code"),
+                trade.get("base_asset_issuer")
+            )
+            counter_is_usdc = is_circle_usdc(
+                trade.get("counter_asset_type"),
+                trade.get("counter_asset_code"),
+                trade.get("counter_asset_issuer")
+            )
+
+            # STRICT PAIR FILTER: Must be XLM <-> Circle USDC
+            if not ((base_is_xlm and counter_is_usdc) or (base_is_usdc and counter_is_xlm)):
+                state["processed_trade_ids"].append(trade_id)
                 continue
 
             is_base = (trade.get("base_account") == public_key)
             is_counter = (trade.get("counter_account") == public_key)
-            base_is_xlm = (trade.get("base_asset_type") == "native")
-            counter_is_xlm = (trade.get("counter_asset_type") == "native")
             base_is_seller = trade.get("base_is_seller", False)
 
-            # Case 1: XLM is base asset
             bought_via_base = base_is_xlm and (
                 (is_base and not base_is_seller) or (is_counter and base_is_seller)
             )
-
-            # Case 2: XLM is counter asset (USDC is base asset)
             bought_via_counter = counter_is_xlm and (
                 (is_base and base_is_seller) or (is_counter and not base_is_seller)
             )
 
             bought_xlm = bought_via_base or bought_via_counter
-
-            # Mark as processed after determining trade orientation
             state["processed_trade_ids"].append(trade_id)
 
             if bought_xlm:
@@ -114,7 +130,7 @@ def reconcile_executed_trades(state):
 
                 if xlm_bought > 0:
                     buy_price = usdc_paid / xlm_bought
-                    target_sell_price = round(buy_price * 1.02, 6) # +2.0% Take Profit
+                    target_sell_price = round(buy_price * 1.02, 6)
 
                     new_position = {
                         "trade_id": trade_id,
