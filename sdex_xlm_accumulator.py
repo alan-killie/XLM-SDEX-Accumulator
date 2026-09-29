@@ -28,7 +28,7 @@ DRIFT_THRESHOLD = 0.015    # 1.5% price drift to expire stale buys
 
 
 def load_state():
-    """Load grid state schema with ID tracking enabled."""
+    """Load grid state schema with ID tracking and price metadata enabled."""
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             try:
@@ -43,7 +43,9 @@ def load_state():
         "pending_offers": [],
         "processed_trade_ids": [],
         "total_xlm_accumulated": 0.0,
+        "last_market_price": None,
     }
+
 
 
 def save_state(state):
@@ -126,8 +128,8 @@ def reconcile_executed_trades(state):
 
 def sync_and_clean_offers(builder, current_price, state):
     """
-    Syncs resting offers from Horizon into state['pending_offers'] and stages
-    cancellation for stale/drifted buy orders.
+    Syncs resting offers into state['pending_offers'] with explicit USD/XLM prices
+    and stages cancellation for stale/drifted buy orders.
     """
     cancellation_count = 0
     state["pending_offers"] = []
@@ -138,7 +140,7 @@ def sync_and_clean_offers(builder, current_price, state):
 
         for offer in open_offers:
             offer_id = int(offer["id"])
-            offer_price = float(offer["price"])
+            raw_price = float(offer["price"])
             time_str = offer["last_modified_time"].replace("Z", "+00:00")
             created_at = datetime.fromisoformat(time_str).timestamp()
             age_hours = (current_time - created_at) / 3600.0
@@ -146,21 +148,26 @@ def sync_and_clean_offers(builder, current_price, state):
             selling_type = offer.get("selling_asset_type")
             is_selling_xlm = (selling_type == "native")
 
-            # Update live open offers in state
+            # Convert to standard $/XLM price
+            # Selling XLM -> Horizon price is already USDC/XLM
+            # Buying XLM (selling USDC) -> Horizon price is XLM/USDC, so invert it
+            usd_per_xlm = raw_price if is_selling_xlm else (1.0 / raw_price if raw_price > 0 else 0.0)
+
+            # Update live open offers in state with human-readable price
             state["pending_offers"].append({
                 "id": offer_id,
-                "price": offer_price,
+                "price_usd_per_xlm": round(usd_per_xlm, 6),
                 "selling_xlm": is_selling_xlm,
                 "created_at": offer["last_modified_time"],
             })
 
-            drift = (current_price - offer_price) / offer_price if offer_price > 0 else 0
+            drift = (current_price - usd_per_xlm) / usd_per_xlm if usd_per_xlm > 0 else 0
 
-            # Only cancel stale or drifted BUY orders (leave profit-take sells resting)
+            # Only cancel stale or drifted BUY orders
             if not is_selling_xlm and (age_hours >= MAX_OFFER_AGE_HOURS or drift >= DRIFT_THRESHOLD):
                 print(
                     f"Cancelling stale Buy Offer ID {offer_id} "
-                    f"(Age: {age_hours:.1f}h, Drift: {drift*100:.1f}%)"
+                    f"(${usd_per_xlm:.4f}/XLM, Age: {age_hours:.1f}h, Drift: {drift*100:.1f}%)"
                 )
                 builder.append_manage_buy_offer_op(
                     selling=USDC, buying=XLM, amount="0", price=offer["price"], offer_id=offer_id
@@ -172,6 +179,7 @@ def sync_and_clean_offers(builder, current_price, state):
     return cancellation_count
 
 
+
 def run_accumulator_bot():
     price = get_mid_price()
     if not price:
@@ -179,6 +187,10 @@ def run_accumulator_bot():
         return
 
     state = load_state()
+    state["last_market_price"] = round(price, 6)
+    
+    # ... rest of run_accumulator_bot logic ...
+
 
     # 1. Reconcile On-Chain Fills by Unique Trade ID
     reconcile_executed_trades(state)
