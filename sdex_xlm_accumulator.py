@@ -70,7 +70,7 @@ def reconcile_executed_trades(builder, state):
     passive sell offers only when fill value meets or exceeds MIN_SELL_USDC.
     """
     try:
-        trades_call = server.trades().for_account(public_key).order(asc=True).limit(50)
+        trades_call = server.trades().for_account(public_key).order(desc=False).limit(50)
         if state.get("last_trade_cursor"):
             trades_call = trades_call.cursor(state["last_trade_cursor"])
 
