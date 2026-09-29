@@ -32,19 +32,19 @@ jobs:
       - name: Run Accumulator Bot
         env:
           STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
-        run: python sdex_xlm_accumulator.py
+        run: python stellar_grid_bot.py
 
       - name: Commit and push updated JSON state
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          git add grid_state.json
+          git add grid_statetest.json
           
-          # Only commit if grid_state.json actually changed
+          # Only commit if grid_statetest.json actually changed
           if ! git diff --cached --quiet; then
-            git commit -m "chore: update grid_state.json [skip ci]"
+            git commit -m "chore: update grid_statetest.json [skip ci]"
             git push
           else
-            echo "No changes to grid_state.json"
+            echo "No changes to grid_statetest.json"
           fi
