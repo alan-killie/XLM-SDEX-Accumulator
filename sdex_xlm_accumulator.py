@@ -275,10 +275,11 @@ def run_accumulator_bot():
         )
         action_taken = True
 
-    # 6. Submit Multi-Operation Transaction & Persist State
+        # 6. Submit Multi-Operation Transaction & Persist State
     if action_taken:
         try:
-            tx = builder.set_timeout(30).build()
+            # Increase timeout from 30 to 180 seconds to avoid tx_too_late errors
+            tx = builder.set_timeout(180).build()
             tx.sign(kp)
             res = server.submit_transaction(tx)
 
@@ -287,6 +288,7 @@ def run_accumulator_bot():
             print("Transaction envelope submitted successfully.")
         except Exception as e:
             print(f"Transaction submission failed: {e}")
+
     else:
         save_state(state)
         print("No actions required this cycle.")
