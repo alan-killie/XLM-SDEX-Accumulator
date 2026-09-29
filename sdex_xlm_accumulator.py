@@ -72,12 +72,20 @@ def is_circle_usdc(asset_type, code, issuer):
 
 
 def reconcile_executed_trades(state):
+def reconcile_executed_trades(state):
     """
-    Scans recent on-chain trades for the account and populates open_positions
-    ONLY for XLM / Circle-USDC pair trades.
+    Scans recent on-chain trades for the account (most recent first)
+    and populates open_positions ONLY for XLM / Circle-USDC pair trades.
     """
     try:
-        trades_page = server.trades().for_account(public_key).limit(20).call()
+        # ORDER DESCENDING (desc=True) to fetch the latest fills first
+        trades_page = (
+            server.trades()
+            .for_account(public_key)
+            .order(desc=True)
+            .limit(20)
+            .call()
+        )
         records = trades_page.get("_embedded", {}).get("records", [])
 
         for trade in records:
@@ -149,6 +157,7 @@ def reconcile_executed_trades(state):
 
     except Exception as e:
         print(f"Notice: Trade reconciliation check failed ({e})")
+
 
 
 def sync_and_clean_offers(builder, current_price, state):
