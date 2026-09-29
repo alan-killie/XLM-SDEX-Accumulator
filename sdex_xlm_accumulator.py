@@ -9,6 +9,7 @@ from stellar_sdk import (
     TransactionBuilder,
     Network,
     Asset,
+    StrKey,
 )
 
 # ---------------------------------------------------------
@@ -18,11 +19,16 @@ STATE_FILE = "grid_state.json"
 STELLAR_NETWORK = Network.PUBLIC_NETWORK_PASSPHRASE
 HORIZON_URL = "https://horizon.stellar.org"
 
+# Official Circle USDC Mainnet Issuer (56 characters)
+USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+
+# Startup Key Validation Check
+if not StrKey.is_valid_ed25519_public_key(USDC_ISSUER):
+    raise ValueError(f"Invalid Stellar public key format for USDC issuer: {USDC_ISSUER}")
+
 # Trading Pair Configuration
 XLM_ASSET = Asset.native()
-USDC_ASSET = Asset(
-    "USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" # Ensure full 56-character key is pasted
-)
+USDC_ASSET = Asset("USDC", USDC_ISSUER)
 
 # Strategy Parameters
 NUM_TIERS = 10
@@ -90,9 +96,9 @@ def fetch_mid_market_price(server: Server) -> Decimal:
 
 
 def sync_active_offers_from_horizon(server: Server, public_key: str, state: dict) -> None:
-    """Directly sync pending_offers with resting open offers on Horizon to ensure state parity."""
+    """Directly sync pending_offers with resting open offers on Horizon."""
     try:
-        active_offers_response = server.offers().for_account(public_key).call()
+        active_offers_response = server.offers().for_account(public_key).limit(50).call()
         records = active_offers_response.get("_embedded", {}).get("records", [])
 
         state["pending_offers"] = [
@@ -100,8 +106,16 @@ def sync_active_offers_from_horizon(server: Server, public_key: str, state: dict
                 "id": str(offer["id"]),
                 "price": str(offer["price"]),
                 "amount": str(offer["amount"]),
-                "buying_asset": offer["buying_asset_type"] if offer["buying_asset_type"] == "native" else offer.get("buying_asset_code"),
-                "selling_asset": offer["selling_asset_type"] if offer["selling_asset_type"] == "native" else offer.get("selling_asset_code"),
+                "buying_asset": (
+                    offer["buying_asset_type"]
+                    if offer["buying_asset_type"] == "native"
+                    else offer.get("buying_asset_code")
+                ),
+                "selling_asset": (
+                    offer["selling_asset_type"]
+                    if offer["selling_asset_type"] == "native"
+                    else offer.get("selling_asset_code")
+                ),
                 "created_at": offer["last_modified_time"],
             }
             for offer in records
@@ -111,57 +125,61 @@ def sync_active_offers_from_horizon(server: Server, public_key: str, state: dict
 
 
 def reconcile_executed_trades(server: Server, public_key: str, state: dict) -> None:
-    """Query recent DEX trade history to record completed buy/sell fills."""
+    """Query recent DEX trade history using valid Horizon base/counter fields."""
     try:
         trades_response = server.trades().for_account(public_key).limit(20).call()
         trade_records = trades_response.get("_embedded", {}).get("records", [])
 
-        # Process trades chronologically (oldest first)
         for trade in reversed(trade_records):
-            bought_xlm = (
-                trade.get("bought_asset_type") == "native"
-                and trade.get("sold_asset_code") == USDC_ASSET.code
-            )
-            sold_xlm = (
-                trade.get("sold_asset_type") == "native"
-                and trade.get("bought_asset_code") == USDC_ASSET.code
-            )
+            is_base = trade.get("base_account") == public_key
+            base_is_seller = trade.get("base_is_seller", True)
+
+            base_type = trade.get("base_asset_type")
+            counter_code = trade.get("counter_asset_code")
+
+            # Validate XLM/USDC pair (Base = XLM native, Counter = USDC)
+            is_xlm_usdc_pair = base_type == "native" and counter_code == USDC_ASSET.code
+            if not is_xlm_usdc_pair:
+                continue
+
+            # Determine trade direction relative to public_key
+            if is_base:
+                bought_xlm = not base_is_seller
+                sold_xlm = base_is_seller
+            else:
+                bought_xlm = base_is_seller
+                sold_xlm = not base_is_seller
+
+            xlm_amount = Decimal(trade["base_amount"])
+            usdc_amount = Decimal(trade["counter_amount"])
+            trade_price = usdc_amount / xlm_amount
 
             if bought_xlm:
-                xlm_amount = Decimal(trade["bought_amount"])
-                usdc_amount = Decimal(trade["sold_amount"])
-                buy_price = usdc_amount / xlm_amount
-
-                # Verify if this position is already recorded in state
                 position_exists = any(
-                    abs(Decimal(p["buy_price"]) - buy_price) < Decimal("0.0001")
+                    abs(Decimal(p["buy_price"]) - trade_price) < Decimal("0.0001")
                     and abs(Decimal(p["amount"]) - xlm_amount) < Decimal("0.0001")
                     for p in state["open_positions"]
                 )
                 if not position_exists:
-                    target_sell = (buy_price * (Decimal("1.0") + PROFIT_TAKE_PCT)).quantize(
+                    target_sell = (trade_price * (Decimal("1.0") + PROFIT_TAKE_PCT)).quantize(
                         Decimal("0.000001")
                     )
                     state["open_positions"].append(
                         {
                             "amount": str(xlm_amount),
-                            "buy_price": str(buy_price.quantize(Decimal("0.000001"))),
+                            "buy_price": str(trade_price.quantize(Decimal("0.000001"))),
                             "target_sell_price": str(target_sell),
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                     )
-                    print(f"Trade Reconciled: Bought {xlm_amount:.4f} XLM @ ${buy_price:.4f}")
+                    print(f"Trade Reconciled: Bought {xlm_amount:.4f} XLM @ ${trade_price:.4f}")
 
             elif sold_xlm:
-                xlm_amount = Decimal(trade["sold_amount"])
-                sell_price = Decimal(trade["bought_amount"]) / xlm_amount
-
-                # Find eligible position match closest to target sell price
                 candidates = []
                 for i, pos in enumerate(state["open_positions"]):
                     target_price = Decimal(pos["target_sell_price"])
-                    if sell_price >= target_price - Decimal("0.0005"):
-                        candidates.append((i, abs(sell_price - target_price)))
+                    if trade_price >= target_price - Decimal("0.0005"):
+                        candidates.append((i, abs(trade_price - target_price)))
 
                 if candidates:
                     candidates.sort(key=lambda x: x[1])
@@ -169,10 +187,10 @@ def reconcile_executed_trades(server: Server, public_key: str, state: dict) -> N
                     matched_pos = state["open_positions"].pop(match_idx)
 
                     entry_price = Decimal(matched_pos["buy_price"])
-                    profit_xlm = xlm_amount - (xlm_amount * entry_price / sell_price)
+                    profit_xlm = xlm_amount - (xlm_amount * entry_price / trade_price)
                     state["total_xlm_accumulated"] += float(profit_xlm)
 
-                    print(f"Target Hit! Sold {xlm_amount:.4f} XLM @ ${sell_price:.4f} (+2%)")
+                    print(f"Target Hit! Sold {xlm_amount:.4f} XLM @ ${trade_price:.4f} (+2%)")
 
     except Exception as e:
         print(f"Warning: Failed to reconcile recent trades: {e}")
@@ -206,15 +224,18 @@ def cleanup_stale_offers(server: Server, keypair: Keypair, state: dict) -> None:
 
 
 def execute_grid_logic(server: Server, keypair: Keypair, state: dict) -> None:
-    """Evaluate grid entry/exit criteria and place new buy and sell limit orders."""
+    """Evaluate grid entry/exit criteria and submit all required operations in a single transaction."""
     xlm_bal, usdc_bal = get_account_balances(server, keypair.public_key)
     mid_price = fetch_mid_market_price(server)
 
-    # Calculate dynamic trade size
     calculated_chunk = usdc_bal / Decimal(str(NUM_TIERS))
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
-    # 1. Place Take-Profit Sell Orders for Unhedged Open Positions
+    account = server.load_account(keypair.public_key)
+    builder = TransactionBuilder(account, STELLAR_NETWORK, base_fee=100)
+    has_operations = False
+
+    # 1. Stage Take-Profit Sell Orders for Unhedged Positions
     for pos in state["open_positions"]:
         target_price = str(pos["target_sell_price"])
         pos_amount = str(pos["amount"])
@@ -226,26 +247,17 @@ def execute_grid_logic(server: Server, keypair: Keypair, state: dict) -> None:
         )
 
         if not has_active_sell:
-            print(f"Placing Take-Profit Sell: {pos_amount} XLM @ ${target_price}")
-            account = server.load_account(keypair.public_key)
-            tx = (
-                TransactionBuilder(account, STELLAR_NETWORK, base_fee=100)
-                .append_manage_sell_offer_op(
-                    asset_selling=XLM_ASSET,
-                    asset_buying=USDC_ASSET,
-                    amount=pos_amount,
-                    price=target_price,
-                    offer_id=0,
-                )
-                .set_timeout(30)
-                .build()
+            print(f"Staging Take-Profit Sell: {pos_amount} XLM @ ${target_price}")
+            builder.append_manage_sell_offer_op(
+                asset_selling=XLM_ASSET,
+                asset_buying=USDC_ASSET,
+                amount=pos_amount,
+                price=target_price,
+                offer_id=0,
             )
-            tx.sign(keypair)
-            server.submit_transaction(tx)
-            # Fetch updated offers after submission
-            sync_active_offers_from_horizon(server, keypair.public_key, state)
+            has_operations = True
 
-    # 2. Evaluate Dip-Buy Condition
+    # 2. Stage Dip-Buy Order
     if usdc_bal >= trade_size_usdc and len(state["pending_offers"]) == 0:
         if state["open_positions"]:
             lowest_entry = min(Decimal(p["buy_price"]) for p in state["open_positions"])
@@ -253,29 +265,30 @@ def execute_grid_logic(server: Server, keypair: Keypair, state: dict) -> None:
             should_buy = mid_price <= target_buy_price
         else:
             target_buy_price = mid_price * (Decimal("1.0") - DIP_BUY_PCT)
-            should_buy = True  # Anchor initial position if no open positions exist
+            should_buy = True
 
         if should_buy:
             buy_price = target_buy_price.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
-            xlm_to_buy = (trade_size_usdc / buy_price).quantize(Decimal("0.0000001"), rounding=ROUND_DOWN)
-
-            print(f"Dip Target Active: Placing Buy Offer {xlm_to_buy} XLM @ ${buy_price}")
-
-            account = server.load_account(keypair.public_key)
-            tx = (
-                TransactionBuilder(account, STELLAR_NETWORK, base_fee=100)
-                .append_manage_buy_offer_op(
-                    asset_sold=USDC_ASSET,
-                    asset_bought=XLM_ASSET,
-                    buy_amount=str(xlm_to_buy),
-                    price=str(buy_price),
-                    offer_id=0,
-                )
-                .set_timeout(30)
-                .build()
+            xlm_to_buy = (trade_size_usdc / buy_price).quantize(
+                Decimal("0.0000001"), rounding=ROUND_DOWN
             )
-            tx.sign(keypair)
-            server.submit_transaction(tx)
+
+            print(f"Staging Buy Offer: {xlm_to_buy} XLM @ ${buy_price}")
+            builder.append_manage_buy_offer_op(
+                asset_sold=USDC_ASSET,
+                asset_bought=XLM_ASSET,
+                buy_amount=str(xlm_to_buy),
+                price=str(buy_price),
+                offer_id=0,
+            )
+            has_operations = True
+
+    # 3. Submit single atomic transaction envelope if any operations were staged
+    if has_operations:
+        tx = builder.set_timeout(30).build()
+        tx.sign(keypair)
+        server.submit_transaction(tx)
+        print("Grid transaction envelope submitted successfully.")
 
 
 def main():
