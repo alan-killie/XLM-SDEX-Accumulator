@@ -5,7 +5,7 @@
       "id": 1859525282,
       "price_usd_per_xlm": 0.22833,
       "selling_xlm": false,
-      "created_at": "2026-09-29T08:01:11Z"
+      "created_at": "2026-09-29T09:11:11Z"
     }
   ],
   "processed_trade_ids": [
@@ -53,5 +53,5 @@
     "277773999097028609-0"
   ],
   "total_xlm_accumulated": 0.0,
-  "last_market_price": 0.229111
+  "last_market_price": 0.229906
 }
