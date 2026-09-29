@@ -23,7 +23,7 @@ STATE_FILE = "grid_state.json"
 TOTAL_CAPITAL_USDC = 9.0   # Total USDC working capital
 NUM_TIERS = 10               # 10 tranches ($10 USDC per trade)
 PROFIT_MARGIN = 1.020        # +2.0% profit target
-DIP_THRESHOLD = 0.990        # -1.0% buy trigger below mid-price
+DIP_THRESHOLD = 0.995        # -1.0% buy trigger below mid-price
 REPOSITION_DRIFT = 0.005     # Reposition buy offer if mid-price drifts >0.5%
 MIN_SELL_USDC = 1.00         # Dust threshold: minimum $1.00 fill before posting sell offer
 
