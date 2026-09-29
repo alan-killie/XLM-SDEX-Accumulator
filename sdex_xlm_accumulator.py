@@ -67,7 +67,7 @@ def get_mid_price():
         return None
 
 
-def reconcile_executed_trades(server, public_key, state):
+def reconcile_executed_trades(state):
     """
     Scans recent on-chain trades for the account and populates open_positions
     for newly executed XLM buy trades.
@@ -92,8 +92,8 @@ def reconcile_executed_trades(server, public_key, state):
             base_is_seller = trade.get("base_is_seller", False)
 
             # Determine if this account BOUGHT XLM:
-            # 1. We are base_account, base asset is XLM, and base_is_seller is False
-            # 2. We are counter_account, base asset is XLM, and base_is_seller is True
+            # 1. Base account, base asset is XLM, and base_is_seller is False
+            # 2. Counter account, base asset is XLM, and base_is_seller is True
             bought_xlm = (base_is_xlm and is_base and not base_is_seller) or \
                          (base_is_xlm and is_counter and base_is_seller)
 
@@ -122,6 +122,7 @@ def reconcile_executed_trades(server, public_key, state):
 
     except Exception as e:
         print(f"Notice: Trade reconciliation check failed ({e})")
+
 
 
 
