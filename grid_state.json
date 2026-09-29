@@ -1,11 +1,5 @@
 {
-  "open_positions": [
-    {
-      "buy_price": 0.227504,
-      "xlm_amount": 4.3955205,
-      "cost_usdc": 0.9999985
-    }
-  ],
+  "open_positions": [],
   "pending_offers": [],
-  "total_xlm_accumulated": 1.4101680027431716
+  "total_xlm_accumulated": 1.4305223353545216
 }
