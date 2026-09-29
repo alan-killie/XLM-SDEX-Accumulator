@@ -20,7 +20,7 @@ USDC = Asset("USDC", USDC_ISSUER)
 
 STATE_FILE = "grid_state.json"
 
-TOTAL_CAPITAL_USDC = 1.0   # Total USDC working capital
+TOTAL_CAPITAL_USDC = 9.0   # Total USDC working capital
 NUM_TIERS = 10               # 10 tranches ($10 USDC per trade)
 PROFIT_MARGIN = 1.020        # +2.0% profit target
 DIP_THRESHOLD = 0.990        # -1.0% buy trigger below mid-price
