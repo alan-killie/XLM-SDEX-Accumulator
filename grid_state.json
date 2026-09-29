@@ -1,13 +1,6 @@
 {
   "open_positions": [],
-  "pending_offers": [
-    {
-      "id": 1859490079,
-      "price_usd_per_xlm": 0.221751,
-      "selling_xlm": false,
-      "created_at": "2026-09-29T03:15:41Z"
-    }
-  ],
+  "pending_offers": [],
   "processed_trade_ids": [
     "251024655015141377-0",
     "251024655015141377-1",
@@ -51,5 +44,5 @@
     "277768703402094594-1"
   ],
   "total_xlm_accumulated": 0.0,
-  "last_market_price": 0.225979
+  "last_market_price": 0.225852
 }
