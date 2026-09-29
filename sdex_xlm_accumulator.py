@@ -21,7 +21,7 @@ HORIZON_URL = "https://horizon.stellar.org"
 # Trading Pair Configuration
 XLM_ASSET = Asset.native()
 USDC_ASSET = Asset(
-    "USDC", "GA5ZSEJYB37JRC5AVCI5M4GE3A33DD5TO336283M"  # Official USDC Issuer
+    "USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN" # Ensure full 56-character key is pasted
 )
 
 # Strategy Parameters
