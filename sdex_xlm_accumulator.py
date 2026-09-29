@@ -1,5 +1,4 @@
 import os
-import time
 import json
 from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset
 
@@ -160,7 +159,7 @@ def reconcile_executed_trades(builder, state):
 def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     """
     Cancels lingering buy orders and places a fresh trailing bid
-    in a single atomic transaction.
+    in a single atomic transaction. Correctly parses nested Horizon offer asset structures.
     """
     target_buy_price = round(current_price * DIP_THRESHOLD, 6)
     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
@@ -168,38 +167,60 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     open_offers = server.offers().for_account(public_key).limit(50).call().get("_embedded", {}).get("records", [])
     active_buy_offer = None
 
+    # Correctly identify BUY offers (selling USDC, buying XLM) via nested Horizon objects
     for offer in open_offers:
-        if offer.get("selling_asset_type") != "native":  # Selling USDC = Buying XLM
+        selling_asset = offer.get("selling", {})
+        buying_asset = offer.get("buying", {})
+
+        selling_is_usdc = (
+            selling_asset.get("asset_code") == "USDC" 
+            and selling_asset.get("asset_issuer") == USDC_ISSUER
+        )
+        buying_is_xlm = (buying_asset.get("asset_type") == "native")
+
+        if selling_is_usdc and buying_is_xlm:
             active_buy_offer = offer
             break
 
     if active_buy_offer:
         offer_id = int(active_buy_offer["id"])
-        raw_price = float(active_buy_offer["price"])
-        existing_buy_price = 1.0 / raw_price if raw_price > 0 else 0.0
+        
+        # Horizon price = XLM / USDC ratio; convert to USDC / XLM
+        xlm_per_usdc = float(active_buy_offer["price"])
+        existing_buy_price = 1.0 / xlm_per_usdc if xlm_per_usdc > 0 else 0.0
 
         drift = abs(current_price - (existing_buy_price / DIP_THRESHOLD)) / current_price
 
         if drift >= REPOSITION_DRIFT:
-            print(f"Trailing Buy: Clearing Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
+            # Calculate USDC locked in this buy offer (remaining XLM to buy * buy price)
+            xlm_remaining = float(active_buy_offer["amount"])
+            usdc_locked_in_offer = xlm_remaining * existing_buy_price
             
-            # Op 1: Cancel unfilled remainder (releases USDC inside this tx execution)
-            builder.append_manage_buy_offer_op(
-                selling=USDC, buying=XLM, amount="0", price=active_buy_offer["price"], offer_id=offer_id
-            )
-            
-            # Op 2: Place fresh full-tranche buy order
-            xlm_to_buy = tranche_size_usdc / target_buy_price
-            builder.append_manage_buy_offer_op(
-                selling=USDC,
-                buying=XLM,
-                amount=f"{xlm_to_buy:.7f}",
-                price=f"{target_buy_price:.6f}",
-                offer_id=0,
-            )
-            return True
+            # Total usable USDC once Op 1 cancels the offer
+            effective_usdc = liquid_usdc + usdc_locked_in_offer
+
+            if effective_usdc >= tranche_size_usdc:
+                print(f"Trailing Buy: Clearing Buy Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
+                
+                # Op 1: Cancel old buy offer
+                builder.append_manage_buy_offer_op(
+                    selling=USDC, buying=XLM, amount="0", price=active_buy_offer["price"], offer_id=offer_id
+                )
+                
+                # Op 2: Place new buy offer
+                xlm_to_buy = tranche_size_usdc / target_buy_price
+                builder.append_manage_buy_offer_op(
+                    selling=USDC,
+                    buying=XLM,
+                    amount=f"{xlm_to_buy:.7f}",
+                    price=f"{target_buy_price:.6f}",
+                    offer_id=0,
+                )
+                return True
+            else:
+                print(f"Insufficient USDC (${effective_usdc:.2f}) to reposition buy offer.")
     else:
-        # Only place if we have enough LIQUID USDC and available position slots
+        # No open buy offer found; place new bid if liquid USDC is available
         if liquid_usdc >= tranche_size_usdc and len(state["open_positions"]) < NUM_TIERS:
             xlm_to_buy = tranche_size_usdc / target_buy_price
             print(f"Trailing Buy: Placing new bid for {xlm_to_buy:.4f} XLM @ ${target_buy_price:.4f}")
@@ -212,7 +233,7 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             )
             return True
         else:
-            print(f"Skipping buy placement: ${liquid_usdc:.2f} liquid USDC available (Need ${tranche_size_usdc:.2f}).")
+            print(f"Skipping buy placement: ${liquid_usdc:.2f} liquid USDC available.")
 
     return False
 
