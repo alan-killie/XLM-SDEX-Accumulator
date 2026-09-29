@@ -70,7 +70,7 @@ def get_mid_price():
 def reconcile_executed_trades(state):
     """
     Scans recent on-chain trades for the account and populates open_positions
-    for newly executed XLM buy trades.
+    for newly executed XLM buy trades, handling both base and counter asset orientations.
     """
     try:
         trades_page = server.trades().for_account(public_key).limit(20).call()
@@ -83,24 +83,35 @@ def reconcile_executed_trades(state):
             if trade_id in state.get("processed_trade_ids", []):
                 continue
 
-            # Mark trade as processed to prevent re-ingestion
-            state["processed_trade_ids"].append(trade_id)
-
             is_base = (trade.get("base_account") == public_key)
             is_counter = (trade.get("counter_account") == public_key)
             base_is_xlm = (trade.get("base_asset_type") == "native")
+            counter_is_xlm = (trade.get("counter_asset_type") == "native")
             base_is_seller = trade.get("base_is_seller", False)
 
-            # Determine if this account BOUGHT XLM:
-            # 1. Base account, base asset is XLM, and base_is_seller is False
-            # 2. Counter account, base asset is XLM, and base_is_seller is True
-            bought_xlm = (base_is_xlm and is_base and not base_is_seller) or \
-                         (base_is_xlm and is_counter and base_is_seller)
+            # Case 1: XLM is base asset
+            bought_via_base = base_is_xlm and (
+                (is_base and not base_is_seller) or (is_counter and base_is_seller)
+            )
+
+            # Case 2: XLM is counter asset (USDC is base asset)
+            bought_via_counter = counter_is_xlm and (
+                (is_base and base_is_seller) or (is_counter and not base_is_seller)
+            )
+
+            bought_xlm = bought_via_base or bought_via_counter
+
+            # Mark as processed after determining trade orientation
+            state["processed_trade_ids"].append(trade_id)
 
             if bought_xlm:
-                xlm_bought = float(trade.get("base_amount", 0))
-                usdc_paid = float(trade.get("counter_amount", 0))
-                
+                if base_is_xlm:
+                    xlm_bought = float(trade.get("base_amount", 0))
+                    usdc_paid = float(trade.get("counter_amount", 0))
+                else:
+                    xlm_bought = float(trade.get("counter_amount", 0))
+                    usdc_paid = float(trade.get("base_amount", 0))
+
                 if xlm_bought > 0:
                     buy_price = usdc_paid / xlm_bought
                     target_sell_price = round(buy_price * 1.02, 6) # +2.0% Take Profit
@@ -122,6 +133,7 @@ def reconcile_executed_trades(state):
 
     except Exception as e:
         print(f"Notice: Trade reconciliation check failed ({e})")
+
 
 
 
