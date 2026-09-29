@@ -1,15 +1,5 @@
 {
-  "open_positions": [
-    {
-      "trade_id": "277805060300271617-2",
-      "buy_price": 0.23136,
-      "cost_usdc": 0.9,
-      "xlm_to_sell": 3.8137694,
-      "xlm_retained": 0.076272,
-      "target_sell_price": 0.235987,
-      "created_at": "2026-09-29T14:50:36Z"
-    }
-  ],
+  "open_positions": [],
   "last_trade_cursor": "277805060300271617-2",
   "total_xlm_accumulated": 0.076272,
   "last_market_price": 0.229352
