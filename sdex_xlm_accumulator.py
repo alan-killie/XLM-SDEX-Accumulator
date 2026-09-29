@@ -112,7 +112,7 @@ def reconcile_executed_trades(builder, state):
             bought_via_counter = counter_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
 
             sold_via_base = base_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
-            sold_via_counter = counter_is_xlm and ((is_base and not base_is_seller) or (is_counter and *is_base if false else not base_is_seller))
+            sold_via_counter = counter_is_xlm and ((is_base and not base_is_seller) or (is_counter and base_is_seller))
 
             # --------------------------------------------------
             # 1. HANDLE BUY FILL (Stage Sell Offer + Track Pending Position)
