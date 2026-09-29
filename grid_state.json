@@ -3,7 +3,7 @@
   "pending_offers": [
     {
       "id": 1859490079,
-      "price": 4.5095686,
+      "price_usd_per_xlm": 0.221751,
       "selling_xlm": false,
       "created_at": "2026-09-29T03:15:41Z"
     }
@@ -50,5 +50,6 @@
     "277768703402094594-0",
     "277768703402094594-1"
   ],
-  "total_xlm_accumulated": 0.0
+  "total_xlm_accumulated": 0.0,
+  "last_market_price": 0.225979
 }
