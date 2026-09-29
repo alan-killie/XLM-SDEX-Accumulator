@@ -16,7 +16,8 @@ public_key = kp.public_key
 
 server = Server("https://horizon.stellar.org")
 XLM = Asset.native()
-USDC = Asset("USDC", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN")
+USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+USDC = Asset("USDC", USDC_ISSUER)
 
 STATE_FILE = "grid_state.json"
 NUM_TIERS = 10
@@ -47,7 +48,6 @@ def load_state():
     }
 
 
-
 def save_state(state):
     """Persist grid state JSON to disk."""
     with open(STATE_FILE, "w") as f:
@@ -67,10 +67,9 @@ def get_mid_price():
         return None
 
 
-USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
-
 def is_circle_usdc(asset_type, code, issuer):
     return asset_type != "native" and code == "USDC" and issuer == USDC_ISSUER
+
 
 def reconcile_executed_trades(state):
     """
@@ -130,12 +129,13 @@ def reconcile_executed_trades(state):
 
                 if xlm_bought > 0:
                     buy_price = usdc_paid / xlm_bought
-                    target_sell_price = round(buy_price * 1.02, 6)
+                    target_sell_price = round(buy_price * PROFIT_MARGIN, 6)
 
                     new_position = {
                         "trade_id": trade_id,
                         "xlm_amount": round(xlm_bought, 7),
                         "buy_price": round(buy_price, 6),
+                        "cost_usdc": round(usdc_paid, 6),
                         "target_sell_price": target_sell_price,
                         "created_at": trade.get("ledger_close_time")
                     }
@@ -149,9 +149,6 @@ def reconcile_executed_trades(state):
 
     except Exception as e:
         print(f"Notice: Trade reconciliation check failed ({e})")
-
-
-
 
 
 def sync_and_clean_offers(builder, current_price, state):
@@ -206,7 +203,6 @@ def sync_and_clean_offers(builder, current_price, state):
     return cancellation_count
 
 
-
 def run_accumulator_bot():
     price = get_mid_price()
     if not price:
@@ -215,9 +211,6 @@ def run_accumulator_bot():
 
     state = load_state()
     state["last_market_price"] = round(price, 6)
-    
-    # ... rest of run_accumulator_bot logic ...
-
 
     # 1. Reconcile On-Chain Fills by Unique Trade ID
     reconcile_executed_trades(state)
@@ -241,7 +234,7 @@ def run_accumulator_bot():
     usdc_balance = 0.0
     xlm_balance = 0.0
     for b in account_details.get("balances", []):
-        if b.get("asset_code") == "USDC":
+        if b.get("asset_code") == "USDC" and b.get("asset_issuer") == USDC_ISSUER:
             usdc_balance = float(b["balance"])
         elif b.get("asset_type") == "native":
             xlm_balance = max(0.0, float(b["balance"]) - 2.0)  # Reserve 2 XLM for fees/min balance
@@ -255,6 +248,8 @@ def run_accumulator_bot():
 
         if price >= target_sell_price and xlm_balance >= pos["xlm_amount"]:
             xlm_to_sell = pos["xlm_amount"]
+            cost_usdc = pos.get("cost_usdc", xlm_to_sell * pos["buy_price"])
+
             print(
                 f"Tranche Profit Target Hit! Selling {xlm_to_sell:.4f} XLM @ ${price:.4f} "
                 f"(Target was ${target_sell_price:.4f})"
@@ -267,7 +262,7 @@ def run_accumulator_bot():
                 price=f"{price * 0.999:.6f}",  # 0.1% buffer for immediate taker execution
                 offer_id=0,
             )
-            accumulated_profit_delta += (xlm_to_sell * price) - pos["cost_usdc"]
+            accumulated_profit_delta += (xlm_to_sell * price) - cost_usdc
             xlm_balance -= xlm_to_sell
             action_taken = True
         else:
@@ -302,10 +297,9 @@ def run_accumulator_bot():
         )
         action_taken = True
 
-        # 6. Submit Multi-Operation Transaction & Persist State
+    # 6. Submit Multi-Operation Transaction & Persist State
     if action_taken:
         try:
-            # Increase timeout from 30 to 180 seconds to avoid tx_too_late errors
             tx = builder.set_timeout(180).build()
             tx.sign(kp)
             res = server.submit_transaction(tx)
@@ -315,7 +309,6 @@ def run_accumulator_bot():
             print("Transaction envelope submitted successfully.")
         except Exception as e:
             print(f"Transaction submission failed: {e}")
-
     else:
         save_state(state)
         print("No actions required this cycle.")
