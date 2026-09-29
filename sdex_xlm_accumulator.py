@@ -72,7 +72,6 @@ def is_circle_usdc(asset_type, code, issuer):
 
 
 def reconcile_executed_trades(state):
-def reconcile_executed_trades(state):
     """
     Scans recent on-chain trades for the account (most recent first)
     and populates open_positions ONLY for XLM / Circle-USDC pair trades.
