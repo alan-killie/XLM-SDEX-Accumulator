@@ -1,6 +1,5 @@
 import os
 import json
-import time
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 
@@ -10,16 +9,13 @@ from stellar_sdk import (
     TransactionBuilder,
     Network,
     Asset,
-    ManageBuyOffer,
-    ManageSellOffer,
 )
-from stellar_sdk.exceptions import HorizonRequestException
 
 # ---------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------
 STATE_FILE = "grid_state.json"
-STELLAR_NETWORK = Network.PUBLIC
+STELLAR_NETWORK = Network.PUBLIC_NETWORK_PASSPHRASE
 HORIZON_URL = "https://horizon.stellar.org"
 
 # Trading Pair Configuration
@@ -94,7 +90,7 @@ def fetch_mid_market_price(server: Server) -> Decimal:
 
 
 def sync_active_offers_from_horizon(server: Server, public_key: str, state: dict) -> None:
-    """Directly sync pending_offers with resting open offers on Horizon to fix discrepancies."""
+    """Directly sync pending_offers with resting open offers on Horizon to ensure state parity."""
     try:
         active_offers_response = server.offers().for_account(public_key).call()
         records = active_offers_response.get("_embedded", {}).get("records", [])
@@ -122,7 +118,6 @@ def reconcile_executed_trades(server: Server, public_key: str, state: dict) -> N
 
         # Process trades chronologically (oldest first)
         for trade in reversed(trade_records):
-            # Check if trade matches our account acting as buyer or seller
             bought_xlm = (
                 trade.get("bought_asset_type") == "native"
                 and trade.get("sold_asset_code") == USDC_ASSET.code
@@ -144,11 +139,14 @@ def reconcile_executed_trades(server: Server, public_key: str, state: dict) -> N
                     for p in state["open_positions"]
                 )
                 if not position_exists:
+                    target_sell = (buy_price * (Decimal("1.0") + PROFIT_TAKE_PCT)).quantize(
+                        Decimal("0.000001")
+                    )
                     state["open_positions"].append(
                         {
                             "amount": str(xlm_amount),
                             "buy_price": str(buy_price.quantize(Decimal("0.000001"))),
-                            "target_sell_price": str((buy_price * (Decimal("1.0") + PROFIT_TAKE_PCT)).quantize(Decimal("0.000001"))),
+                            "target_sell_price": str(target_sell),
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
                     )
@@ -158,18 +156,23 @@ def reconcile_executed_trades(server: Server, public_key: str, state: dict) -> N
                 xlm_amount = Decimal(trade["sold_amount"])
                 sell_price = Decimal(trade["bought_amount"]) / xlm_amount
 
-                # Find corresponding open position to close out
+                # Find eligible position match closest to target sell price
+                candidates = []
                 for i, pos in enumerate(state["open_positions"]):
                     target_price = Decimal(pos["target_sell_price"])
-                    if abs(sell_price - target_price) < Decimal("0.005") or sell_price >= target_price:
-                        # Realize profit gain
-                        entry_price = Decimal(pos["buy_price"])
-                        profit_xlm = xlm_amount - (xlm_amount * entry_price / sell_price)
-                        state["total_xlm_accumulated"] += float(profit_xlm)
+                    if sell_price >= target_price - Decimal("0.0005"):
+                        candidates.append((i, abs(sell_price - target_price)))
 
-                        print(f"Target Hit! Sold {xlm_amount:.4f} XLM @ ${sell_price:.4f} (+2%)")
-                        state["open_positions"].pop(i)
-                        break
+                if candidates:
+                    candidates.sort(key=lambda x: x[1])
+                    match_idx = candidates[0][0]
+                    matched_pos = state["open_positions"].pop(match_idx)
+
+                    entry_price = Decimal(matched_pos["buy_price"])
+                    profit_xlm = xlm_amount - (xlm_amount * entry_price / sell_price)
+                    state["total_xlm_accumulated"] += float(profit_xlm)
+
+                    print(f"Target Hit! Sold {xlm_amount:.4f} XLM @ ${sell_price:.4f} (+2%)")
 
     except Exception as e:
         print(f"Warning: Failed to reconcile recent trades: {e}")
@@ -178,7 +181,6 @@ def reconcile_executed_trades(server: Server, public_key: str, state: dict) -> N
 def cleanup_stale_offers(server: Server, keypair: Keypair, state: dict) -> None:
     """Cancel pending offers older than MAX_OFFER_AGE_HOURS."""
     now = datetime.now(timezone.utc)
-    account = server.load_account(keypair.public_key)
 
     for offer in list(state["pending_offers"]):
         offer_time = datetime.fromisoformat(offer["created_at"].replace("Z", "+00:00"))
@@ -186,6 +188,7 @@ def cleanup_stale_offers(server: Server, keypair: Keypair, state: dict) -> None:
 
         if age_hours >= MAX_OFFER_AGE_HOURS:
             print(f"Canceling stale offer #{offer['id']} (Age: {age_hours:.2f}h)...")
+            account = server.load_account(keypair.public_key)
             tx = (
                 TransactionBuilder(account, STELLAR_NETWORK, base_fee=100)
                 .append_manage_buy_offer_op(
@@ -203,31 +206,60 @@ def cleanup_stale_offers(server: Server, keypair: Keypair, state: dict) -> None:
 
 
 def execute_grid_logic(server: Server, keypair: Keypair, state: dict) -> None:
-    """Evaluate grid entry/exit criteria and place new limit orders as necessary."""
+    """Evaluate grid entry/exit criteria and place new buy and sell limit orders."""
     xlm_bal, usdc_bal = get_account_balances(server, keypair.public_key)
     mid_price = fetch_mid_market_price(server)
 
-    # Determine dynamic trade chunk size
+    # Calculate dynamic trade size
     calculated_chunk = usdc_bal / Decimal(str(NUM_TIERS))
     trade_size_usdc = max(calculated_chunk, MIN_TRADE_USDC)
 
-    # 1. Evaluate Dip-Buy Condition
+    # 1. Place Take-Profit Sell Orders for Unhedged Open Positions
+    for pos in state["open_positions"]:
+        target_price = str(pos["target_sell_price"])
+        pos_amount = str(pos["amount"])
+
+        has_active_sell = any(
+            offer.get("selling_asset") in ["native", "XLM"]
+            and abs(Decimal(offer["price"]) - Decimal(target_price)) < Decimal("0.0001")
+            for offer in state["pending_offers"]
+        )
+
+        if not has_active_sell:
+            print(f"Placing Take-Profit Sell: {pos_amount} XLM @ ${target_price}")
+            account = server.load_account(keypair.public_key)
+            tx = (
+                TransactionBuilder(account, STELLAR_NETWORK, base_fee=100)
+                .append_manage_sell_offer_op(
+                    asset_selling=XLM_ASSET,
+                    asset_buying=USDC_ASSET,
+                    amount=pos_amount,
+                    price=target_price,
+                    offer_id=0,
+                )
+                .set_timeout(30)
+                .build()
+            )
+            tx.sign(keypair)
+            server.submit_transaction(tx)
+            # Fetch updated offers after submission
+            sync_active_offers_from_horizon(server, keypair.public_key, state)
+
+    # 2. Evaluate Dip-Buy Condition
     if usdc_bal >= trade_size_usdc and len(state["pending_offers"]) == 0:
         if state["open_positions"]:
-            # Baseline is lowest entry in state
             lowest_entry = min(Decimal(p["buy_price"]) for p in state["open_positions"])
             target_buy_price = lowest_entry * (Decimal("1.0") - DIP_BUY_PCT)
             should_buy = mid_price <= target_buy_price
         else:
-            # Baseline is current market price anchor (-1%)
             target_buy_price = mid_price * (Decimal("1.0") - DIP_BUY_PCT)
-            should_buy = True  # Always anchor first entry if no open positions exist
+            should_buy = True  # Anchor initial position if no open positions exist
 
         if should_buy:
             buy_price = target_buy_price.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
             xlm_to_buy = (trade_size_usdc / buy_price).quantize(Decimal("0.0000001"), rounding=ROUND_DOWN)
 
-            print(f"Dip Detected! Placing Buy Offer: {xlm_to_buy} XLM @ ${buy_price}")
+            print(f"Dip Target Active: Placing Buy Offer {xlm_to_buy} XLM @ ${buy_price}")
 
             account = server.load_account(keypair.public_key)
             tx = (
@@ -243,8 +275,7 @@ def execute_grid_logic(server: Server, keypair: Keypair, state: dict) -> None:
                 .build()
             )
             tx.sign(keypair)
-            response = server.submit_transaction(tx)
-            print("Transaction submitted successfully.")
+            server.submit_transaction(tx)
 
 
 def main():
@@ -257,19 +288,19 @@ def main():
 
     state = load_grid_state()
 
-    # Step 1: Sync active open offers directly from Horizon
+    # Step 1: Query resting offers directly from Horizon
     sync_active_offers_from_horizon(server, keypair.public_key, state)
 
-    # Step 2: Reconcile any newly executed trade fills
+    # Step 2: Reconcile recent trade fills with open positions
     reconcile_executed_trades(server, keypair.public_key, state)
 
-    # Step 3: Clean up expired/stale orders
+    # Step 3: Clean up stale pending offers (>1 hour old)
     cleanup_stale_offers(server, keypair, state)
 
-    # Step 4: Run trading strategy checks
+    # Step 4: Execute buy/sell grid logic
     execute_grid_logic(server, keypair, state)
 
-    # Step 5: Sync state once more and save
+    # Step 5: Perform final offer sync and write state back to JSON
     sync_active_offers_from_horizon(server, keypair.public_key, state)
     save_grid_state(state)
 
