@@ -162,6 +162,20 @@ def reconcile_executed_trades(builder, state):
         print(f"Notice: Trade reconciliation check failed ({e})")
 
 
+def main():
+    # 1. Process fills first to log position data and stage sells
+    reconcile_executed_trades(server)
+
+    # 2. Check liquid USDC balance BEFORE trying to reset the buy bid
+    available_usdc = get_available_usdc(server, PUBLIC_KEY)
+
+    # 3. Only attempt to place/reset the buy offer if you have enough USDC
+    if available_usdc >= BUY_AMOUNT_USDC:
+        reset_trailing_buy_offer(server, current_price)
+    else:
+        print(f"Capital fully deployed (${available_usdc:.2f} USDC available). Skipping buy reset until sell orders execute.")
+
+
 def manage_trailing_buy_offer(builder, current_price, state, usdc_balance):
     """
     Cancels lingering/partially filled buy orders and places a fresh trailing bid 
