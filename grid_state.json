@@ -1,5 +1,12 @@
 {
   "open_positions": [],
-  "pending_offers": [],
+  "pending_offers": [
+    {
+      "id": 1859483849,
+      "price": 4.5172627,
+      "selling_xlm": false,
+      "created_at": "2026-09-29T02:30:51Z"
+    }
+  ],
   "total_xlm_accumulated": 1.4305223353545216
 }
