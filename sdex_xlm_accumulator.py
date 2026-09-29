@@ -157,7 +157,8 @@ def reconcile_executed_trades(state):
 def sync_and_clean_offers(builder, current_price, state):
     """
     Syncs resting offers into state['pending_offers'] with explicit USD/XLM prices
-    and stages cancellation for stale/drifted buy orders.
+    and stages cancellation for stale/drifted buy orders without leaving canceled
+    offers in local state.
     """
     cancellation_count = 0
     state["pending_offers"] = []
@@ -177,21 +178,10 @@ def sync_and_clean_offers(builder, current_price, state):
             is_selling_xlm = (selling_type == "native")
 
             # Convert to standard $/XLM price
-            # Selling XLM -> Horizon price is already USDC/XLM
-            # Buying XLM (selling USDC) -> Horizon price is XLM/USDC, so invert it
             usd_per_xlm = raw_price if is_selling_xlm else (1.0 / raw_price if raw_price > 0 else 0.0)
-
-            # Update live open offers in state with human-readable price
-            state["pending_offers"].append({
-                "id": offer_id,
-                "price_usd_per_xlm": round(usd_per_xlm, 6),
-                "selling_xlm": is_selling_xlm,
-                "created_at": offer["last_modified_time"],
-            })
-
             drift = (current_price - usd_per_xlm) / usd_per_xlm if usd_per_xlm > 0 else 0
 
-            # Only cancel stale or drifted BUY orders
+            # Cancel stale or drifted BUY orders
             if not is_selling_xlm and (age_hours >= MAX_OFFER_AGE_HOURS or drift >= DRIFT_THRESHOLD):
                 print(
                     f"Cancelling stale Buy Offer ID {offer_id} "
@@ -201,6 +191,15 @@ def sync_and_clean_offers(builder, current_price, state):
                     selling=USDC, buying=XLM, amount="0", price=offer["price"], offer_id=offer_id
                 )
                 cancellation_count += 1
+            else:
+                # ONLY append active offers that are NOT scheduled for cancellation
+                state["pending_offers"].append({
+                    "id": offer_id,
+                    "price_usd_per_xlm": round(usd_per_xlm, 6),
+                    "selling_xlm": is_selling_xlm,
+                    "created_at": offer["last_modified_time"],
+                })
+
     except Exception as e:
         print(f"Notice: Offer check skipped ({e})")
 
