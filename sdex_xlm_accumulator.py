@@ -67,14 +67,28 @@ def is_circle_usdc(asset_type, code, issuer):
 def reconcile_executed_trades(builder, state):
     """
     Scans new fills using Horizon cursor. Processes partial fills and stages 
-    passive sell offers only when fill value meets or exceeds MIN_SELL_USDC.
+    passive sell offers (max 2 per batch to prevent op_underfunded).
     """
     try:
-        trades_call = server.trades().for_account(public_key).order(desc=False).limit(50)
-        if state.get("last_trade_cursor"):
-            trades_call = trades_call.cursor(state["last_trade_cursor"])
+        # Initialize cursor on first run to prevent replaying past history
+        if not state.get("last_trade_cursor"):
+            latest = server.trades().for_account(public_key).order(desc=True).limit(1).call()
+            records = latest.get("_embedded", {}).get("records", [])
+            if records:
+                state["last_trade_cursor"] = records[0]["paging_token"]
+                print(f"Initialized trade cursor to latest fill ({state['last_trade_cursor']}).")
+            return
+
+        trades_call = (
+            server.trades()
+            .for_account(public_key)
+            .order(desc=False)
+            .cursor(state["last_trade_cursor"])
+            .limit(50)
+        )
 
         records = trades_call.call().get("_embedded", {}).get("records", [])
+        staged_sell_count = 0
 
         for trade in records:
             state["last_trade_cursor"] = trade["paging_token"]
@@ -117,16 +131,20 @@ def reconcile_executed_trades(builder, state):
                     if xlm_retained > 0:
                         state["total_xlm_accumulated"] += xlm_retained
 
-                    # Ignore dust partial fills under $1.00 to save reserve fees
+                    # Stage sell offer if meets threshold and under batch limit (max 2 per run)
                     if usdc_paid >= MIN_SELL_USDC:
-                        builder.append_manage_sell_offer_op(
-                            selling=XLM,
-                            buying=USDC,
-                            amount=f"{xlm_to_sell:.7f}",
-                            price=f"{target_sell_price:.6f}",
-                            offer_id=0,
-                        )
-                        print(f"SELL OFFER STAGED: {xlm_to_sell:.4f} XLM @ ${target_sell_price:.4f}")
+                        if staged_sell_count < 2:
+                            builder.append_manage_sell_offer_op(
+                                selling=XLM,
+                                buying=USDC,
+                                amount=f"{xlm_to_sell:.7f}",
+                                price=f"{target_sell_price:.6f}",
+                                offer_id=0,
+                            )
+                            staged_sell_count += 1
+                            print(f"SELL OFFER STAGED: {xlm_to_sell:.4f} XLM @ ${target_sell_price:.4f}")
+                        else:
+                            print(f"BATCH LIMIT REACHED: Deferred sell offer for trade {trade['id']} to next cycle.")
                     else:
                         print(f"DUST FILL LOGGED (${usdc_paid:.2f}): Postponed sell offer placement.")
 
