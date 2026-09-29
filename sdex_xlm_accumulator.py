@@ -67,63 +67,62 @@ def get_mid_price():
         return None
 
 
-def reconcile_executed_trades(state):
+def reconcile_executed_trades(server, public_key, state):
     """
-    Fetches recent trade history and ingests newly filled trades strictly by unique trade ID,
-    creating discrete position tranches with individual target profit prices.
+    Scans recent on-chain trades for the account and populates open_positions
+    for newly executed XLM buy trades.
     """
     try:
-        trades_page = server.trades().for_account(public_key).order(desc=True).limit(20).call()
+        trades_page = server.trades().for_account(public_key).limit(20).call()
         records = trades_page.get("_embedded", {}).get("records", [])
 
-        updated = False
-        for trade in reversed(records):  # Process chronologically (oldest to newest)
+        for trade in records:
             trade_id = str(trade["id"])
 
-            # Skip if trade ID was already processed
-            if trade_id in state["processed_trade_ids"]:
+            # Skip already processed trades
+            if trade_id in state.get("processed_trade_ids", []):
                 continue
 
+            # Mark trade as processed to prevent re-ingestion
             state["processed_trade_ids"].append(trade_id)
-            updated = True
 
-            # Evaluate direction relative to account
-            is_base = trade.get("base_account") == public_key
-            base_is_seller = trade.get("base_is_seller", True)
-            base_type = trade.get("base_asset_type")
-            counter_code = trade.get("counter_asset_code")
+            is_base = (trade.get("base_account") == public_key)
+            is_counter = (trade.get("counter_account") == public_key)
+            base_is_xlm = (trade.get("base_asset_type") == "native")
+            base_is_seller = trade.get("base_is_seller", False)
 
-            if base_type == "native" and counter_code == "USDC":
-                bought_xlm = not base_is_seller if is_base else base_is_seller
+            # Determine if this account BOUGHT XLM:
+            # 1. We are base_account, base asset is XLM, and base_is_seller is False
+            # 2. We are counter_account, base asset is XLM, and base_is_seller is True
+            bought_xlm = (base_is_xlm and is_base and not base_is_seller) or \
+                         (base_is_xlm and is_counter and base_is_seller)
 
-                if bought_xlm:
-                    xlm_bought = float(trade["base_amount"])
-                    usdc_spent = float(trade["counter_amount"])
-                    fill_price = usdc_spent / xlm_bought if xlm_bought > 0 else 0.0
-                    target_sell_price = round(fill_price * PROFIT_MARGIN, 6)
+            if bought_xlm:
+                xlm_bought = float(trade.get("base_amount", 0))
+                usdc_paid = float(trade.get("counter_amount", 0))
+                
+                if xlm_bought > 0:
+                    buy_price = usdc_paid / xlm_bought
+                    target_sell_price = round(buy_price * 1.02, 6) # +2.0% Take Profit
 
+                    new_position = {
+                        "trade_id": trade_id,
+                        "xlm_amount": round(xlm_bought, 7),
+                        "buy_price": round(buy_price, 6),
+                        "target_sell_price": target_sell_price,
+                        "created_at": trade.get("ledger_close_time")
+                    }
+
+                    state["open_positions"].append(new_position)
                     print(
-                        f"Tranche Ingested [Trade ID {trade_id}]: "
-                        f"Bought {xlm_bought:.4f} XLM @ ${fill_price:.4f} "
-                        f"| Target Sell: ${target_sell_price:.4f}"
+                        f"MATCHED FILL: Tranche ingested! "
+                        f"Bought {xlm_bought:.4f} XLM @ ${buy_price:.4f} "
+                        f"(Target: ${target_sell_price:.4f})"
                     )
 
-                    state["open_positions"].append({
-                        "trade_id": trade_id,
-                        "buy_price": fill_price,
-                        "target_sell_price": target_sell_price,
-                        "xlm_amount": xlm_bought,
-                        "cost_usdc": usdc_spent,
-                        "timestamp": trade.get("ledger_close_time"),
-                    })
-
-        # Cap stored IDs list to keep JSON compact
-        state["processed_trade_ids"] = state["processed_trade_ids"][-100:]
-
-        if updated:
-            save_state(state)
     except Exception as e:
-        print(f"Trade reconciliation skipped: {e}")
+        print(f"Notice: Trade reconciliation check failed ({e})")
+
 
 
 def sync_and_clean_offers(builder, current_price, state):
