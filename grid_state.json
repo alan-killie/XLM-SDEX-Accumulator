@@ -1,6 +1,16 @@
 {
-  "open_positions": [],
-  "last_trade_cursor": "277819525750382594-0",
-  "total_xlm_accumulated": 0.0,
-  "last_market_price": 0.223266
+  "open_positions": [
+    {
+      "trade_id": "277820230125498369-1",
+      "buy_price": 0.22215,
+      "cost_usdc": 0.9,
+      "xlm_to_sell": 3.9718791,
+      "xlm_retained": 0.0794375,
+      "target_sell_price": 0.226593,
+      "created_at": "2026-09-29T19:44:56Z"
+    }
+  ],
+  "last_trade_cursor": "277820230125498369-1",
+  "total_xlm_accumulated": 0.0794375,
+  "last_market_price": 0.221322
 }
