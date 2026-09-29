@@ -203,6 +203,35 @@ def sync_and_clean_offers(builder, current_price, state):
     return cancellation_count
 
 
+def refresh_pending_offers(state):
+    """
+    Fetches active resting offers directly from Horizon after transaction submission
+    and updates state['pending_offers'] so new orders are saved to grid_state.json immediately.
+    """
+    try:
+        offers_page = server.offers().for_account(public_key).limit(50).call()
+        open_offers = offers_page.get("_embedded", {}).get("records", [])
+
+        pending = []
+        for offer in open_offers:
+            offer_id = int(offer["id"])
+            raw_price = float(offer["price"])
+            selling_type = offer.get("selling_asset_type")
+            is_selling_xlm = (selling_type == "native")
+
+            usd_per_xlm = raw_price if is_selling_xlm else (1.0 / raw_price if raw_price > 0 else 0.0)
+
+            pending.append({
+                "id": offer_id,
+                "price_usd_per_xlm": round(usd_per_xlm, 6),
+                "selling_xlm": is_selling_xlm,
+                "created_at": offer["last_modified_time"],
+            })
+        state["pending_offers"] = pending
+    except Exception as e:
+        print(f"Notice: Pending offer refresh failed ({e})")
+
+
 def run_accumulator_bot():
     price = get_mid_price()
     if not price:
@@ -305,6 +334,10 @@ def run_accumulator_bot():
             res = server.submit_transaction(tx)
 
             state["total_xlm_accumulated"] += accumulated_profit_delta
+
+            # Fetch newly placed resting offer from Horizon so state is updated in this run
+            refresh_pending_offers(state)
+
             save_state(state)
             print("Transaction envelope submitted successfully.")
         except Exception as e:
