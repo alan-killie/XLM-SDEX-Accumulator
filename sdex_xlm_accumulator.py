@@ -271,16 +271,23 @@ def reconcile_executed_trades(builder, state):
                     xlm_to_sell = round(usdc_paid / target_sell_price, 7)
                     pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
 
-                    state["open_positions"].append({
-                        "trade_id": trade_id_str,
-                        "buy_price": round(buy_price, 6),
-                        "cost_usdc": round(usdc_paid, 6),
-                        "xlm_to_sell": xlm_to_sell,
-                        "pending_xlm_gain": pending_xlm_gain,
-                        "target_sell_price": target_sell_price,
-                        "created_at": trade.get("ledger_close_time"),
-                        "sell_offer_id": None
-                    })
+                    if usdc_paid < 0.10 and state["open_positions"]:
+                        last_pos = state["open_positions"][-1]
+                        last_pos["cost_usdc"] = round(last_pos["cost_usdc"] + usdc_paid, 6)
+                        last_pos["xlm_to_sell"] = round(last_pos["xlm_to_sell"] + xlm_to_sell, 7)
+                        last_pos["pending_xlm_gain"] = round(last_pos["pending_xlm_gain"] + pending_xlm_gain, 7)
+                        print(f"DUST MERGED: Added ${usdc_paid:.4f} fill to active position {last_pos['trade_id']}")
+                    else:
+                        state["open_positions"].append({
+                            "trade_id": trade_id_str,
+                            "buy_price": round(buy_price, 6),
+                            "cost_usdc": round(usdc_paid, 6),
+                            "xlm_to_sell": xlm_to_sell,
+                            "pending_xlm_gain": pending_xlm_gain,
+                            "target_sell_price": target_sell_price,
+                            "created_at": trade.get("ledger_close_time"),
+                            "sell_offer_id": None
+                        })
 
             elif sold_via_base or sold_via_counter:
                 if base_is_xlm:
