@@ -1,6 +1,7 @@
 import os
 import json
 from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset
+from stellar_sdk.exceptions import BadRequestError
 
 # ---------------------------------------------------------
 # Configuration & Strategy Parameters
@@ -64,10 +65,6 @@ def is_circle_usdc(asset_type, code, issuer):
 
 
 def find_matching_position(open_positions, trade):
-    """
-    Finds matching open_positions index for an incoming sell fill.
-    Calculates USDC per XLM trade price directly from asset amounts.
-    """
     if not open_positions:
         return None, None
 
@@ -83,13 +80,11 @@ def find_matching_position(open_positions, trade):
     base_offer = str(trade.get("base_offer_id", ""))
     counter_offer = str(trade.get("counter_offer_id", ""))
 
-    # 1. Direct sell_offer_id match
     for idx, pos in enumerate(open_positions):
         sell_id = str(pos.get("sell_offer_id", ""))
         if sell_id and (sell_id == base_offer or sell_id == counter_offer):
             return idx, "offer_id"
 
-    # 2. Target price match (within 0.1% tolerance)
     if trade_price > 0:
         for idx, pos in enumerate(open_positions):
             target = pos.get("target_sell_price", 0.0)
@@ -99,97 +94,7 @@ def find_matching_position(open_positions, trade):
     return None, None
 
 
-def sync_and_stage_sell_offers(builder, state, pub_key, srv):
-    """
-    1. Reconciles mapped sell_offer_ids no longer active on-chain (realizes filled gains).
-    2. Maps active unassigned on-chain offer IDs to ALL matching grouped positions.
-    3. Aggregates micro-positions by target price and stages consolidated sell offers.
-    """
-    if not state.get("open_positions"):
-        return
-
-    try:
-        open_offers = (
-            srv.offers()
-            .for_account(pub_key)
-            .limit(50)
-            .call()
-            .get("_embedded", {})
-            .get("records", [])
-        )
-
-        active_sells = []
-        for offer in open_offers:
-            selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
-            buying_is_usdc = (
-                offer.get("buying", {}).get("asset_code") == "USDC"
-                and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
-            )
-            if selling_is_xlm and buying_is_usdc:
-                active_sells.append(
-                    {
-                        "offer_id": str(offer["id"]),
-                        "price": float(offer["price"]),
-                        "used": False,
-                    }
-                )
-
-        # 1. Reconcile on-chain sell offer status
-        remaining_positions = []
-        for pos in state["open_positions"]:
-            pos_offer_id = str(pos.get("sell_offer_id")) if pos.get("sell_offer_id") else None
-            if pos_offer_id:
-                match = next((o for o in active_sells if o["offer_id"] == pos_offer_id), None)
-                if match:
-                    match["used"] = True
-                    remaining_positions.append(pos)
-                else:
-                    # Mapped offer is no longer on-chain -> filled on DEX!
-                    gain = pos.get("pending_xlm_gain", 0.0)
-                    state["total_xlm_accumulated"] = round(
-                        state.get("total_xlm_accumulated", 0.0) + gain, 7
-                    )
-                    print(
-                        f"RECONCILED FILLED OFFER: Offer {pos_offer_id} (Trade {pos['trade_id']}) "
-                        f"filled on-chain. Realized +{gain:.7f} XLM gain."
-                    )
-            else:
-                remaining_positions.append(pos)
-
-        state["open_positions"] = remaining_positions
-
-        # 2. Assign active unassigned on-chain offers to ALL positions sharing target price
-        for offer in active_sells:
-            if offer["used"]:
-                continue
-            matching_positions = [
-                p for p in state["open_positions"]
-                if not p.get("sell_offer_id") and abs(p.get("target_sell_price", 0.0) - offer["price"]) / offer["price"] < 0.001
-            ]
-            if matching_positions:
-                for p in matching_positions:
-                    p["sell_offer_id"] = offer["offer_id"]
-                    print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${p['target_sell_price']:.6f}")
-                offer["used"] = True
-
-        # 3. Group remaining unmapped positions by target sell price
-        unmapped_groups = {}
-        for pos in state["open_positions"]:
-            if not pos.get("sell_offer_id"):
-                target_key = round(pos["target_sell_price"], 6)
-                unmapped_groups.setdefault(target_key, []).append(pos)
-
-        # 4. Stage consolidated sell offers
-        staged_count = 0
-        for target_price, positions in unmapped_groups.items():
-            if staged_count >= 2:
-                break
 def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
-    """
-    1. Reconciles mapped sell_offer_ids no longer active on-chain (realizes filled gains).
-    2. Maps active unassigned on-chain offer IDs to ALL matching grouped positions.
-    3. Aggregates micro-positions by target price and stages consolidated sell offers within liquid XLM limits.
-    """
     if not state.get("open_positions"):
         return
 
@@ -219,7 +124,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                     }
                 )
 
-        # 1. Reconcile on-chain sell offer status
         remaining_positions = []
         for pos in state["open_positions"]:
             pos_offer_id = str(pos.get("sell_offer_id")) if pos.get("sell_offer_id") else None
@@ -242,7 +146,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
 
         state["open_positions"] = remaining_positions
 
-        # 2. Assign active unassigned on-chain offers to positions sharing target price
         for offer in active_sells:
             if offer["used"]:
                 continue
@@ -256,14 +159,12 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                     print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${p['target_sell_price']:.6f}")
                 offer["used"] = True
 
-        # 3. Group remaining unmapped positions by target sell price
         unmapped_groups = {}
         for pos in state["open_positions"]:
             if not pos.get("sell_offer_id"):
                 target_key = round(pos["target_sell_price"], 6)
                 unmapped_groups.setdefault(target_key, []).append(pos)
 
-        # 4. Stage consolidated sell offers (bounded by available liquid XLM)
         staged_count = 0
         available_xlm_to_sell = liquid_xlm
 
@@ -280,7 +181,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             if total_cost < MIN_SELL_USDC and len(state["open_positions"]) > len(positions):
                 continue
 
-            # Cap sell amount to available liquid XLM to avoid op_underfunded
             total_xlm_to_sell = min(requested_xlm, available_xlm_to_sell)
 
             builder.append_manage_sell_offer_op(
@@ -302,11 +202,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
 
 
 def reconcile_executed_trades(builder, state):
-    """
-    Scans new fills using Horizon cursor.
-    - Buy fills: Adds pending position to state (deduplicated by trade_id).
-    - Sell fills: Cascades partial and multi-position trade fills to realize XLM gains.
-    """
     try:
         if not state.get("last_trade_cursor"):
             latest = server.trades().for_account(public_key).order(desc=True).limit(1).call()
@@ -351,7 +246,6 @@ def reconcile_executed_trades(builder, state):
             sold_via_base = base_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
             sold_via_counter = counter_is_xlm and ((is_base and not base_is_seller) or (is_counter and base_is_seller))
 
-            # 1. HANDLE BUY FILL (Track Pending Position)
             if bought_via_base or bought_via_counter:
                 trade_id_str = str(trade["id"])
                 if any(p.get("trade_id") == trade_id_str for p in state["open_positions"]):
@@ -382,7 +276,6 @@ def reconcile_executed_trades(builder, state):
                         "sell_offer_id": None
                     })
 
-            # 2. HANDLE SELL FILL (Cascading Realization)
             elif sold_via_base or sold_via_counter:
                 if base_is_xlm:
                     xlm_sold = float(trade.get("base_amount", 0))
@@ -429,10 +322,6 @@ def reconcile_executed_trades(builder, state):
 
 
 def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
-    """
-    Cancels lingering buy orders and places a fresh trailing bid
-    in a single atomic transaction. Correctly parses locked USDC from Horizon.
-    """
     target_buy_price = round(current_price * DIP_THRESHOLD, 6)
     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
 
@@ -468,7 +357,7 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                 print(f"Trailing Buy: Clearing Buy Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
                 
                 builder.append_manage_buy_offer_op(
-                    selling=USDC, buying=XLM, amount="0", price=active_buy_offer["price"], offer_id=offer_id
+                    selling=USDC, buying=XLM, amount="0", price=active_buy_offer["price_r"], offer_id=offer_id
                 )
                 
                 xlm_to_buy = tranche_size_usdc / target_buy_price
@@ -520,10 +409,8 @@ def run_accumulator_bot():
 
     action_taken = False
 
-    # 1. Reconcile fills from trade history
     reconcile_executed_trades(builder, state)
 
-    # 2. Calculate liquid USDC and XLM balances (subtracting selling liabilities and XLM reserve)
     liquid_usdc = 0.0
     native_balance = 0.0
     native_liabilities = 0.0
@@ -541,16 +428,13 @@ def run_accumulator_bot():
     base_reserve = (2 + subentry_count) * 0.5
     liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
 
-    # 3. Sync offer IDs & stage sell orders within liquid_xlm bounds
     sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
     if len(builder.operations) > 0:
         action_taken = True
 
-    # 4. Manage trailing buy offer
     if manage_trailing_buy_offer(builder, price, state, liquid_usdc):
         action_taken = True
 
-    # 5. Single atomic submit
     if action_taken:
         try:
             tx = builder.set_timeout(180).build()
