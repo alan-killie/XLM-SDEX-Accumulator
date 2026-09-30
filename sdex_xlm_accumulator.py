@@ -63,11 +63,87 @@ def is_circle_usdc(asset_type, code, issuer):
     return asset_type != "native" and code == "USDC" and issuer == USDC_ISSUER
 
 
+def find_matching_position(open_positions, trade):
+    """
+    Finds the matching open_positions index for an incoming sell fill.
+    Priority:
+    1. Direct match on sell_offer_id
+    2. Target price match within 0.1% tolerance
+    3. Fallback to FIFO (index 0)
+    """
+    if not open_positions:
+        return None, None
+
+    trade_price = float(trade["price"]["n"]) / float(trade["price"]["d"])
+    base_offer = str(trade.get("base_offer_id", ""))
+    counter_offer = str(trade.get("counter_offer_id", ""))
+
+    # 1. Direct sell_offer_id match
+    for idx, pos in enumerate(open_positions):
+        sell_id = str(pos.get("sell_offer_id", ""))
+        if sell_id and (sell_id == base_offer or sell_id == counter_offer):
+            return idx, "offer_id"
+
+    # 2. Target price match (within 0.1% tolerance)
+    for idx, pos in enumerate(open_positions):
+        target = pos.get("target_sell_price", 0.0)
+        if target > 0 and abs(target - trade_price) / trade_price < 0.001:
+            return idx, "price"
+
+    # 3. Fallback: FIFO
+    return 0, "fifo"
+
+
+def sync_sell_offer_ids(state, pub_key, srv):
+    """
+    Scans active on-chain sell offers and attaches offer_id
+    to matching open_positions records lacking one.
+    """
+    if not state.get("open_positions"):
+        return
+
+    try:
+        open_offers = (
+            srv.offers()
+            .for_account(pub_key)
+            .limit(50)
+            .call()
+            .get("_embedded", {})
+            .get("records", [])
+        )
+
+        active_sells = []
+        for offer in open_offers:
+            selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
+            buying_is_usdc = (
+                offer.get("buying", {}).get("asset_code") == "USDC"
+                and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
+            )
+            if selling_is_xlm and buying_is_usdc:
+                active_sells.append(
+                    {
+                        "offer_id": str(offer["id"]),
+                        "price": 1.0 / float(offer["price"]) if float(offer["price"]) > 0 else 0.0,
+                    }
+                )
+
+        for pos in state["open_positions"]:
+            if not pos.get("sell_offer_id"):
+                target = pos.get("target_sell_price", 0.0)
+                for offer in active_sells:
+                    if abs(offer["price"] - target) / target < 0.001:
+                        pos["sell_offer_id"] = offer["offer_id"]
+                        print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${target:.6f}")
+                        break
+    except Exception as e:
+        print(f"Notice: Failed to sync sell offer IDs ({e})")
+
+
 def reconcile_executed_trades(builder, state):
     """
     Scans new fills using Horizon cursor.
-    - Buy fills: Stages passive sell offers and tracks open positions with pending gains.
-    - Sell fills: Realizes XLM gain into total_xlm_accumulated once USDC principal is recovered.
+    - Buy fills: Stages passive sell offers and tracks open positions.
+    - Sell fills: Matches specific positions, supports partial fills, and realizes XLM gains.
     """
     try:
         if not state.get("last_trade_cursor"):
@@ -153,24 +229,43 @@ def reconcile_executed_trades(builder, state):
                         "xlm_to_sell": xlm_to_sell,
                         "pending_xlm_gain": pending_xlm_gain,
                         "target_sell_price": target_sell_price,
-                        "created_at": trade.get("ledger_close_time")
+                        "created_at": trade.get("ledger_close_time"),
+                        "sell_offer_id": None
                     })
 
             # --------------------------------------------------
             # 2. HANDLE SELL FILL (Realize Profit + Close Position)
             # --------------------------------------------------
             elif sold_via_base or sold_via_counter:
-                if state["open_positions"]:
-                    closed_pos = state["open_positions"].pop(0)
-                    realized_gain = closed_pos.get("pending_xlm_gain", 0.0)
+                if base_is_xlm:
+                    xlm_sold = float(trade.get("base_amount", 0))
+                else:
+                    xlm_sold = float(trade.get("counter_amount", 0))
+
+                if xlm_sold > 0 and state["open_positions"]:
+                    idx, match_type = find_matching_position(state["open_positions"], trade)
                     
-                    state["total_xlm_accumulated"] = round(
-                        state["total_xlm_accumulated"] + realized_gain, 7
-                    )
-                    print(
-                        f"POSITION CLOSED: Recovered ${closed_pos['cost_usdc']:.2f} USDC. "
-                        f"Realized +{realized_gain:.7f} XLM gain."
-                    )
+                    if idx is not None:
+                        pos = state["open_positions"][idx]
+                        
+                        fill_ratio = min(1.0, xlm_sold / pos["xlm_to_sell"]) if pos.get("xlm_to_sell", 0) > 0 else 1.0
+                        realized_gain = pos.get("pending_xlm_gain", 0.0) * fill_ratio
+
+                        state["total_xlm_accumulated"] = round(
+                            state.get("total_xlm_accumulated", 0.0) + realized_gain, 7
+                        )
+
+                        pos["xlm_to_sell"] = round(pos["xlm_to_sell"] - xlm_sold, 7)
+                        pos["pending_xlm_gain"] = round(pos.get("pending_xlm_gain", 0.0) - realized_gain, 7)
+
+                        print(
+                            f"SELL FILL MATCHED ({match_type}): Sold {xlm_sold:.4f} XLM. "
+                            f"Realized +{realized_gain:.7f} XLM gain."
+                        )
+
+                        if pos["xlm_to_sell"] <= 0.0001:
+                            state["open_positions"].pop(idx)
+                            print("POSITION FULLY CLOSED: Removed from grid state.")
 
     except Exception as e:
         print(f"Notice: Trade reconciliation check failed ({e})")
@@ -260,6 +355,9 @@ def run_accumulator_bot():
     state = load_state()
     state["last_market_price"] = round(price, 6)
 
+    # Sync on-chain sell offer IDs to local state
+    sync_sell_offer_ids(state, public_key, server)
+
     account = server.load_account(public_key)
     account_details = server.accounts().account_id(public_key).call()
 
@@ -294,6 +392,9 @@ def run_accumulator_bot():
             tx = builder.set_timeout(180).build()
             tx.sign(kp)
             server.submit_transaction(tx)
+            
+            # Post-submit sync to grab newly created sell offer IDs
+            sync_sell_offer_ids(state, public_key, server)
             save_state(state)
             print("Transaction submitted and state persisted.")
         except Exception as e:
