@@ -331,7 +331,6 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     target_buy_price = round(current_price * DIP_THRESHOLD, 6)
     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
 
-    # Safety buffer to prevent rounding precision underfunding
     usable_usdc = max(0.0, liquid_usdc - 0.02)
 
     open_offers = server.offers().for_account(public_key).limit(50).call().get("_embedded", {}).get("records", [])
@@ -382,7 +381,8 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                     price=f"{target_buy_price:.6f}",
                     offer_id=0,
                 )
-                return True
+                # Replacing an existing offer net-changes 0 subentries
+                return True, False
             else:
                 print(f"Insufficient USDC (${effective_usdc:.2f}) to reposition buy offer.")
     else:
@@ -396,11 +396,12 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                 price=f"{target_buy_price:.6f}",
                 offer_id=0,
             )
-            return True
+            # Creating a brand new buy offer adds +1 subentry (+0.50 XLM reserve)
+            return True, True
         else:
             print(f"Skipping buy placement: ${usable_usdc:.2f} usable USDC available.")
 
-    return False
+    return False, False
 
 
 def run_accumulator_bot():
@@ -442,13 +443,17 @@ def run_accumulator_bot():
     base_reserve = ((2 + subentry_count) * 0.5) + 0.1
     liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
 
-    # 1. Manage trailing buy offer FIRST to release locked USDC/subentry reserve
-    if manage_trailing_buy_offer(builder, price, state, liquid_usdc):
+    # 1. Process trailing buy offer
+    buy_action, created_new_subentry = manage_trailing_buy_offer(builder, price, state, liquid_usdc)
+    if buy_action:
         action_taken = True
+        if created_new_subentry:
+            # Deduct the 0.50 XLM reserve consumed by the new buy subentry
+            liquid_xlm = max(0.0, liquid_xlm - 0.50)
 
-    # 2. Stage consolidated sell offers second
+    # 2. Stage consolidated sell offers with accurate remaining liquid XLM
     sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
-    if len(builder.operations) > 0:
+    if len(builder.operations) > (1 if buy_action else 0):
         action_taken = True
 
     if action_taken:
