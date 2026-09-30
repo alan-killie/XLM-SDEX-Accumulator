@@ -181,23 +181,7 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                 if pos.get("sell_offer_id")
                 else None
             )
-            if pos_offer_id:
-                match = next(
-                    (
-                        o
-                        for o in active_sells
-                        if o["offer_id"] == pos_offer_id
-                    ),
-                    None,
-                )
-                if match:
-                    match["used"] = True
-                    remaining_positions.append(pos)
-                else:
-                    pos["sell_offer_id"] = None
-                    remaining_positions.append(pos)
-            else:
-                remaining_positions.append(pos)
+            if pos_offer_id
 
         state["open_positions"] = remaining_positions
 
