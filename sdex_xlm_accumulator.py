@@ -206,6 +206,7 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
 
         state["open_positions"] = remaining_positions
 
+        # Map active unassigned offers to matching state positions
         for offer in active_sells:
             if offer["used"]:
                 continue
@@ -225,6 +226,20 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                 print(
                     f"Mapped Sell Offer ID {offer['offer_id']} to target"
                     f" ${matching_pos['target_sell_price']:.6f}"
+                )
+
+        # Cancel orphaned on-chain offers to release liquid XLM liabilities
+        for offer in active_sells:
+            if not offer["used"]:
+                builder.append_manage_sell_offer_op(
+                    selling=XLM,
+                    buying=USDC,
+                    amount="0",
+                    price=f"{offer['price']:.6f}",
+                    offer_id=int(offer["offer_id"]),
+                )
+                print(
+                    f"CANCELLED ORPHANED SELL OFFER ID {offer['offer_id']} to release liquid XLM"
                 )
 
         unmapped_groups = {}
