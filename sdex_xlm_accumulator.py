@@ -204,22 +204,21 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
         for offer in active_sells:
             if offer["used"]:
                 continue
-            matching_positions = [
-                p
-                for p in state["open_positions"]
-                if not p.get("sell_offer_id")
-                and abs(p.get("target_sell_price", 0.0) - offer["price"])
-                / offer["price"]
-                < 0.001
-            ]
-            if matching_positions:
-                for p in matching_positions:
-                    p["sell_offer_id"] = offer["offer_id"]
-                    print(
-                        f"Mapped Sell Offer ID {offer['offer_id']} to target"
-                        f" ${p['target_sell_price']:.6f}"
-                    )
+            
+            # Find the single best matching position that doesn't have an offer ID yet
+            matching_pos = next(
+                (
+                    p for p in state["open_positions"]
+                    if not p.get("sell_offer_id")
+                    and abs(p.get("target_sell_price", 0.0) - offer["price"]) / offer["price"] < 0.0005
+                    and abs(p.get("xlm_to_sell", 0.0) - float(offer.get("amount", 0))) < 0.01
+                ),
+                None
+            )
+            if matching_pos:
+                matching_pos["sell_offer_id"] = offer["offer_id"]
                 offer["used"] = True
+                print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${matching_pos['target_sell_price']:.6f}")
 
         unmapped_groups = {}
         for pos in state["open_positions"]:
