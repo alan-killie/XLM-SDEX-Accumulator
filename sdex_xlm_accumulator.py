@@ -169,6 +169,7 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                         {
                             "offer_id": str(offer["id"]),
                             "price": float(offer["price"]),
+                            "amount": float(offer.get("amount", 0.0)),
                             "used": False,
                         }
                     )
@@ -182,27 +183,49 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                 else None
             )
             if pos_offer_id:
+                match = next(
+                    (
+                        o
+                        for o in active_sells
+                        if o["offer_id"] == pos_offer_id
+                    ),
+                    None,
+                )
+                if match:
+                    if abs(pos["xlm_to_sell"] - match["amount"]) < 0.01:
+                        match["used"] = True
+                        remaining_positions.append(pos)
+                    else:
+                        pos["sell_offer_id"] = None
+                        remaining_positions.append(pos)
+                else:
+                    pos["sell_offer_id"] = None
+                    remaining_positions.append(pos)
+            else:
+                remaining_positions.append(pos)
 
         state["open_positions"] = remaining_positions
 
         for offer in active_sells:
             if offer["used"]:
                 continue
-            
-            # Find the single best matching position that doesn't have an offer ID yet
             matching_pos = next(
                 (
-                    p for p in state["open_positions"]
+                    p
+                    for p in state["open_positions"]
                     if not p.get("sell_offer_id")
                     and abs(p.get("target_sell_price", 0.0) - offer["price"]) / offer["price"] < 0.0005
-                    and abs(p.get("xlm_to_sell", 0.0) - float(offer.get("amount", 0))) < 0.01
+                    and abs(p.get("xlm_to_sell", 0.0) - offer["amount"]) < 0.01
                 ),
-                None
+                None,
             )
             if matching_pos:
                 matching_pos["sell_offer_id"] = offer["offer_id"]
                 offer["used"] = True
-                print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${matching_pos['target_sell_price']:.6f}")
+                print(
+                    f"Mapped Sell Offer ID {offer['offer_id']} to target"
+                    f" ${matching_pos['target_sell_price']:.6f}"
+                )
 
         unmapped_groups = {}
         for pos in state["open_positions"]:
