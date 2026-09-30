@@ -28,6 +28,25 @@ REPOSITION_DRIFT = 0.0025   # Reposition if mid-price drifts >0.25%
 MIN_SELL_USDC = 0.50        # Minimum $0.50 fill before staging sell offer
 
 
+def merge_into_position(target, pos_to_add):
+    """Merges pos_to_add into target using a cost-weighted target sell price."""
+    total_cost = target["cost_usdc"] + pos_to_add["cost_usdc"]
+    if total_cost <= 0:
+        return
+    
+    # Cost-weighted average target price
+    weighted_target = (
+        (target["cost_usdc"] * target["target_sell_price"]) +
+        (pos_to_add["cost_usdc"] * pos_to_add["target_sell_price"])
+    ) / total_cost
+
+    target["cost_usdc"] = round(total_cost, 6)
+    target["target_sell_price"] = round(weighted_target, 6)
+    target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos_to_add["xlm_to_sell"], 7)
+    target["pending_xlm_gain"] = round(
+        target.get("pending_xlm_gain", 0.0) + pos_to_add.get("pending_xlm_gain", 0.0), 7
+    )
+
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
@@ -38,10 +57,7 @@ def load_state():
         for pos in positions:
             unmapped = [p for p in cleaned if not p.get("sell_offer_id")]
             if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and unmapped:
-                target = unmapped[-1]
-                target["cost_usdc"] = round(target["cost_usdc"] + pos.get("cost_usdc", 0), 6)
-                target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos.get("xlm_to_sell", 0), 7)
-                target["pending_xlm_gain"] = round(target.get("pending_xlm_gain", 0.0) + pos.get("pending_xlm_gain", 0.0), 7)
+                merge_into_position(unmapped[-1], pos)
             else:
                 cleaned.append(pos)
 
@@ -113,11 +129,16 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
 
     try:
         active_sells = []
-        offers_call = srv.offers().for_account(pub_key).limit(50)
+        cursor = None
         while True:
-            res = offers_call.call().get("_embedded", {}).get("records", [])
+            call_builder = srv.offers().for_account(pub_key).limit(50)
+            if cursor:
+                call_builder.cursor(cursor)
+            
+            res = call_builder.call().get("_embedded", {}).get("records", [])
             if not res:
                 break
+
             for offer in res:
                 selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
                 buying_is_usdc = (
@@ -132,7 +153,7 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                             "used": False,
                         }
                     )
-            offers_call = srv.offers().for_account(pub_key).limit(50).cursor(res[-1]["paging_token"])
+            cursor = str(res[-1]["id"])
 
         remaining_positions = []
         for pos in state["open_positions"]:
