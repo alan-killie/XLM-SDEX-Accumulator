@@ -91,7 +91,7 @@ def find_matching_position(open_positions, trade):
             return idx, "price"
 
     # 3. Fallback: FIFO
-    return 0, "fifo"
+    return None, None
 
 
 def sync_and_stage_sell_offers(builder, state, pub_key, srv):
