@@ -23,7 +23,7 @@ TOTAL_CAPITAL_USDC = 10.0   # Total USDC working capital
 NUM_TIERS = 10              # 10 tranches ($1.00 USDC per trade)
 PROFIT_MARGIN = 1.010       # +1.0% profit target
 DIP_THRESHOLD = 0.995       # -0.5% buy trigger below mid-price
-REPOSITION_DRIFT = 0.005    # Reposition buy offer if mid-price drifts >0.5%
+REPOSITION_DRIFT = 0.0025  # Reposition if mid-price drifts >0.25%
 MIN_SELL_USDC = 0.50        # Minimum $0.50 fill before staging sell offer
 
 
