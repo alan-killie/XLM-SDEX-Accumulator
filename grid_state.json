@@ -28,10 +28,10 @@
       "pending_xlm_gain": 0.0445567,
       "target_sell_price": 0.224478,
       "created_at": "2026-09-30T14:32:47Z",
-      "sell_offer_id": null
+      "sell_offer_id": "1859718608"
     }
   ],
   "last_trade_cursor": "277878358213705729-0",
   "total_xlm_accumulated": 0.0,
-  "last_market_price": 0.22198
+  "last_market_price": 0.221352
 }
