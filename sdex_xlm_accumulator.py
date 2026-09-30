@@ -1,6 +1,6 @@
-import os
 import json
-from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset, Price
+import os
+from stellar_sdk import Asset, Keypair, Network, Price, Server, TransactionBuilder
 from stellar_sdk.exceptions import BadRequestError
 
 # ---------------------------------------------------------
@@ -33,16 +33,15 @@ def load_state():
         with open(STATE_FILE, "r") as f:
             state = json.load(f)
 
-        # Consolidate unmapped dust (< $0.10) into the latest unmapped position
         positions = state.get("open_positions", [])
         cleaned = []
         for pos in positions:
             unmapped = [p for p in cleaned if not p.get("sell_offer_id")]
             if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and unmapped:
                 target = unmapped[-1]
-                target["cost_usdc"] = round(target["cost_usdc"] + pos["cost_usdc"], 6)
-                target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos["xlm_to_sell"], 7)
-                target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pos["pending_xlm_gain"], 7)
+                target["cost_usdc"] = round(target["cost_usdc"] + pos.get("cost_usdc", 0), 6)
+                target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos.get("xlm_to_sell", 0), 7)
+                target["pending_xlm_gain"] = round(target.get("pending_xlm_gain", 0.0) + pos.get("pending_xlm_gain", 0.0), 7)
             else:
                 cleaned.append(pos)
 
@@ -144,7 +143,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                     match["used"] = True
                     remaining_positions.append(pos)
                 else:
-                    # Offer no longer exists on-chain; clear ID so it can re-stage
                     pos["sell_offer_id"] = None
                     remaining_positions.append(pos)
             else:
@@ -175,7 +173,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
         available_xlm_to_sell = liquid_xlm
 
         for target_price, positions in unmapped_groups.items():
-            # Reserve 0.5 XLM for subentry + 0.05 buffer per new staged offer
             if staged_count >= 2 or available_xlm_to_sell <= 0.55:
                 break
 
@@ -191,7 +188,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             max_sellable = max(0.0, available_xlm_to_sell - 0.55)
             total_xlm_to_sell = min(requested_xlm, max_sellable)
 
-            # Skip dust sells below threshold to avoid wasting subentry reserves
             if (total_xlm_to_sell * target_price) < MIN_SELL_USDC:
                 continue
 
@@ -277,7 +273,6 @@ def reconcile_executed_trades(builder, state):
                     xlm_to_sell = round(usdc_paid / target_sell_price, 7)
                     pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
 
-                    # Find latest unmapped position to safely absorb dust
                     unmapped_positions = [p for p in state["open_positions"] if not p.get("sell_offer_id")]
                     if usdc_paid < 0.10 and unmapped_positions:
                         target = unmapped_positions[-1]
@@ -367,8 +362,7 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
 
     if active_buy_offer:
         offer_id = int(active_buy_offer["id"])
-        xlm_per_usdc = float(active_buy_offer["price"])
-        existing_buy_price = 1.0 / xlm_per_usdc if xlm_per_usdc > 0 else 0.0
+        existing_buy_price = float(active_buy_offer["price"])
 
         drift = abs(current_price - (existing_buy_price / DIP_THRESHOLD)) / current_price
 
@@ -387,7 +381,6 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                     price=f"{target_buy_price:.6f}",
                     offer_id=offer_id,
                 )
-                # Replacing an existing offer net-changes 0 subentries
                 return True, False
             else:
                 print(f"Insufficient USDC (${effective_usdc:.2f}) to reposition buy offer.")
@@ -402,7 +395,6 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                 price=f"{target_buy_price:.6f}",
                 offer_id=0,
             )
-            # Creating a brand new buy offer adds +1 subentry (+0.50 XLM reserve)
             return True, True
         else:
             print(f"Skipping buy placement: ${usable_usdc:.2f} usable USDC available.")
@@ -449,15 +441,12 @@ def run_accumulator_bot():
     base_reserve = ((2 + subentry_count) * 0.5) + 0.1
     liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
 
-    # 1. Process trailing buy offer
     buy_action, created_new_subentry = manage_trailing_buy_offer(builder, price, state, liquid_usdc)
     if buy_action:
         action_taken = True
         if created_new_subentry:
-            # Deduct the 0.50 XLM reserve consumed by the new buy subentry
             liquid_xlm = max(0.0, liquid_xlm - 0.50)
 
-    # 2. Stage consolidated sell offers with accurate remaining liquid XLM
     sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
     if len(builder.operations) > (1 if buy_action else 0):
         action_taken = True
