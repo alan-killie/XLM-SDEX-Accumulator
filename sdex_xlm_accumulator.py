@@ -184,16 +184,104 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv):
         for target_price, positions in unmapped_groups.items():
             if staged_count >= 2:
                 break
+def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
+    """
+    1. Reconciles mapped sell_offer_ids no longer active on-chain (realizes filled gains).
+    2. Maps active unassigned on-chain offer IDs to ALL matching grouped positions.
+    3. Aggregates micro-positions by target price and stages consolidated sell offers within liquid XLM limits.
+    """
+    if not state.get("open_positions"):
+        return
+
+    try:
+        open_offers = (
+            srv.offers()
+            .for_account(pub_key)
+            .limit(50)
+            .call()
+            .get("_embedded", {})
+            .get("records", [])
+        )
+
+        active_sells = []
+        for offer in open_offers:
+            selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
+            buying_is_usdc = (
+                offer.get("buying", {}).get("asset_code") == "USDC"
+                and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
+            )
+            if selling_is_xlm and buying_is_usdc:
+                active_sells.append(
+                    {
+                        "offer_id": str(offer["id"]),
+                        "price": float(offer["price"]),
+                        "used": False,
+                    }
+                )
+
+        # 1. Reconcile on-chain sell offer status
+        remaining_positions = []
+        for pos in state["open_positions"]:
+            pos_offer_id = str(pos.get("sell_offer_id")) if pos.get("sell_offer_id") else None
+            if pos_offer_id:
+                match = next((o for o in active_sells if o["offer_id"] == pos_offer_id), None)
+                if match:
+                    match["used"] = True
+                    remaining_positions.append(pos)
+                else:
+                    gain = pos.get("pending_xlm_gain", 0.0)
+                    state["total_xlm_accumulated"] = round(
+                        state.get("total_xlm_accumulated", 0.0) + gain, 7
+                    )
+                    print(
+                        f"RECONCILED FILLED OFFER: Offer {pos_offer_id} (Trade {pos['trade_id']}) "
+                        f"filled on-chain. Realized +{gain:.7f} XLM gain."
+                    )
+            else:
+                remaining_positions.append(pos)
+
+        state["open_positions"] = remaining_positions
+
+        # 2. Assign active unassigned on-chain offers to positions sharing target price
+        for offer in active_sells:
+            if offer["used"]:
+                continue
+            matching_positions = [
+                p for p in state["open_positions"]
+                if not p.get("sell_offer_id") and abs(p.get("target_sell_price", 0.0) - offer["price"]) / offer["price"] < 0.001
+            ]
+            if matching_positions:
+                for p in matching_positions:
+                    p["sell_offer_id"] = offer["offer_id"]
+                    print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${p['target_sell_price']:.6f}")
+                offer["used"] = True
+
+        # 3. Group remaining unmapped positions by target sell price
+        unmapped_groups = {}
+        for pos in state["open_positions"]:
+            if not pos.get("sell_offer_id"):
+                target_key = round(pos["target_sell_price"], 6)
+                unmapped_groups.setdefault(target_key, []).append(pos)
+
+        # 4. Stage consolidated sell offers (bounded by available liquid XLM)
+        staged_count = 0
+        available_xlm_to_sell = liquid_xlm
+
+        for target_price, positions in unmapped_groups.items():
+            if staged_count >= 2 or available_xlm_to_sell <= 0.0001:
+                break
 
             total_cost = sum(p.get("cost_usdc", 0.0) for p in positions)
-            total_xlm_to_sell = round(sum(p["xlm_to_sell"] for p in positions), 7)
+            requested_xlm = round(sum(p["xlm_to_sell"] for p in positions), 7)
 
-            if total_xlm_to_sell <= 0.0001:
+            if requested_xlm <= 0.0001:
                 continue
 
-            # Stage offer if cost >= MIN_SELL_USDC or if these are the only open positions left
             if total_cost < MIN_SELL_USDC and len(state["open_positions"]) > len(positions):
                 continue
+
+            # Cap sell amount to available liquid XLM to avoid op_underfunded
+            total_xlm_to_sell = min(requested_xlm, available_xlm_to_sell)
 
             builder.append_manage_sell_offer_op(
                 selling=XLM,
@@ -202,6 +290,7 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv):
                 price=f"{target_price:.6f}",
                 offer_id=0,
             )
+            available_xlm_to_sell -= total_xlm_to_sell
             staged_count += 1
             print(
                 f"CONSOLIDATED SELL STAGED: {total_xlm_to_sell:.4f} XLM @ ${target_price:.6f} "
