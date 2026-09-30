@@ -37,14 +37,14 @@ def load_state():
         positions = state.get("open_positions", [])
         cleaned = []
         for pos in positions:
-            unmapped_cleaned = [p for p in cleaned if not p.get("sell_offer_id")]
-            if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and unmapped_cleaned:
-                target = unmapped_cleaned[-1]
-                target["cost_usdc"] = round(target["cost_usdc"] + pos["cost_usdc"], 6)
-                target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos["xlm_to_sell"], 7)
-                target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pos["pending_xlm_gain"], 7)
-            else:
-                cleaned.append(pos)
+    unmapped = [p for p in cleaned if not p.get("sell_offer_id")]
+    if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and unmapped:
+        target = unmapped[-1]
+        target["cost_usdc"] = round(target["cost_usdc"] + pos["cost_usdc"], 6)
+        target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos["xlm_to_sell"], 7)
+        target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pos["pending_xlm_gain"], 7)
+    else:
+        cleaned.append(pos)
 
         state["open_positions"] = cleaned
         return state
@@ -287,12 +287,11 @@ def reconcile_executed_trades(builder, state):
 
                     # Find latest unmapped position to safely absorb dust
                     unmapped_positions = [p for p in state["open_positions"] if not p.get("sell_offer_id")]
-
-                    if usdc_paid < 0.10 and unmapped_positions:
-                        target = unmapped_positions[-1]
-                        target["cost_usdc"] = round(target["cost_usdc"] + usdc_paid, 6)
-                        target["xlm_to_sell"] = round(target["xlm_to_sell"] + xlm_to_sell, 7)
-                        target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pending_xlm_gain, 7)
+if usdc_paid < 0.10 and unmapped_positions:
+    target = unmapped_positions[-1]
+    target["cost_usdc"] = round(target["cost_usdc"] + usdc_paid, 6)
+    target["xlm_to_sell"] = round(target["xlm_to_sell"] + xlm_to_sell, 7)
+    target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pending_xlm_gain, 7)
                         print(f"DUST MERGED: Added ${usdc_paid:.4f} fill to active position {target['trade_id']}")
                     else:
                         state["open_positions"].append({
