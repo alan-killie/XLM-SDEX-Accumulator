@@ -23,7 +23,7 @@ TOTAL_CAPITAL_USDC = 10.0   # Total USDC working capital
 NUM_TIERS = 10              # 10 tranches ($1.00 USDC per trade)
 PROFIT_MARGIN = 1.010       # +1.0% profit target
 DIP_THRESHOLD = 0.995       # -0.5% buy trigger below mid-price
-REPOSITION_DRIFT = 0.0025  # Reposition if mid-price drifts >0.25%
+REPOSITION_DRIFT = 0.0025   # Reposition if mid-price drifts >0.25%
 MIN_SELL_USDC = 0.50        # Minimum $0.50 fill before staging sell offer
 
 
@@ -101,7 +101,7 @@ def find_matching_position(open_positions, trade):
 
 def sync_and_stage_sell_offers(builder, state, pub_key, srv):
     """
-    1. Clears stale sell_offer_ids no longer active on-chain.
+    1. Reconciles mapped sell_offer_ids no longer active on-chain (realizes filled gains).
     2. Maps active unassigned on-chain offer IDs to ALL matching grouped positions.
     3. Aggregates micro-positions by target price and stages consolidated sell offers.
     """
@@ -134,15 +134,29 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv):
                     }
                 )
 
-        # 1. Verify existing mapped offer IDs remain active on-chain
+        # 1. Reconcile on-chain sell offer status
+        remaining_positions = []
         for pos in state["open_positions"]:
             pos_offer_id = str(pos.get("sell_offer_id")) if pos.get("sell_offer_id") else None
             if pos_offer_id:
                 match = next((o for o in active_sells if o["offer_id"] == pos_offer_id), None)
                 if match:
                     match["used"] = True
+                    remaining_positions.append(pos)
                 else:
-                    pos["sell_offer_id"] = None
+                    # Mapped offer is no longer on-chain -> filled on DEX!
+                    gain = pos.get("pending_xlm_gain", 0.0)
+                    state["total_xlm_accumulated"] = round(
+                        state.get("total_xlm_accumulated", 0.0) + gain, 7
+                    )
+                    print(
+                        f"RECONCILED FILLED OFFER: Offer {pos_offer_id} (Trade {pos['trade_id']}) "
+                        f"filled on-chain. Realized +{gain:.7f} XLM gain."
+                    )
+            else:
+                remaining_positions.append(pos)
+
+        state["open_positions"] = remaining_positions
 
         # 2. Assign active unassigned on-chain offers to ALL positions sharing target price
         for offer in active_sells:
@@ -248,9 +262,7 @@ def reconcile_executed_trades(builder, state):
             sold_via_base = base_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
             sold_via_counter = counter_is_xlm and ((is_base and not base_is_seller) or (is_counter and base_is_seller))
 
-            # --------------------------------------------------
             # 1. HANDLE BUY FILL (Track Pending Position)
-            # --------------------------------------------------
             if bought_via_base or bought_via_counter:
                 trade_id_str = str(trade["id"])
                 if any(p.get("trade_id") == trade_id_str for p in state["open_positions"]):
@@ -281,9 +293,7 @@ def reconcile_executed_trades(builder, state):
                         "sell_offer_id": None
                     })
 
-            # --------------------------------------------------
             # 2. HANDLE SELL FILL (Cascading Realization)
-            # --------------------------------------------------
             elif sold_via_base or sold_via_counter:
                 if base_is_xlm:
                     xlm_sold = float(trade.get("base_amount", 0))
