@@ -8,7 +8,7 @@
       "pending_xlm_gain": 0.0882391,
       "target_sell_price": 0.226676,
       "created_at": "2026-09-29T23:42:42Z",
-      "sell_offer_id": "1859633043"
+      "sell_offer_id": null
     },
     {
       "trade_id": "277833965430247425-0",
@@ -18,7 +18,7 @@
       "pending_xlm_gain": 0.0885291,
       "target_sell_price": 0.225897,
       "created_at": "2026-09-30T00:11:27Z",
-      "sell_offer_id": "1859635913"
+      "sell_offer_id": null
     },
     {
       "trade_id": "277854379410096129-0",
@@ -28,7 +28,7 @@
       "pending_xlm_gain": 0.0887385,
       "target_sell_price": 0.225375,
       "created_at": "2026-09-30T06:47:32Z",
-      "sell_offer_id": "1859638425"
+      "sell_offer_id": null
     },
     {
       "trade_id": "277855680784912385-3",
@@ -58,7 +58,7 @@
       "pending_xlm_gain": 0.008058,
       "target_sell_price": 0.226956,
       "created_at": "2026-09-30T07:37:57Z",
-      "sell_offer_id": "1859675652"
+      "sell_offer_id": null
     },
     {
       "trade_id": "277856982160015361-0",
@@ -68,7 +68,7 @@
       "pending_xlm_gain": 0.0360017,
       "target_sell_price": 0.226956,
       "created_at": "2026-09-30T07:38:02Z",
-      "sell_offer_id": "1859675652"
+      "sell_offer_id": null
     },
     {
       "trade_id": "277857690830622721-0",
@@ -188,7 +188,7 @@
       "pending_xlm_gain": 0.0078778,
       "target_sell_price": 0.228156,
       "created_at": "2026-09-30T09:06:07Z",
-      "sell_offer_id": "1859685195"
+      "sell_offer_id": null
     },
     {
       "trade_id": "277861732393693185-3",
@@ -218,7 +218,7 @@
       "pending_xlm_gain": 0.0436837,
       "target_sell_price": 0.228943,
       "created_at": "2026-09-30T09:13:37Z",
-      "sell_offer_id": "1859685196"
+      "sell_offer_id": null
     },
     {
       "trade_id": "277862020156637185-0",
@@ -231,7 +231,7 @@
       "sell_offer_id": null
     }
   ],
-  "last_trade_cursor": null,
+  "last_trade_cursor": "277869738212737025-0",
   "total_xlm_accumulated": 0.177729,
-  "last_market_price": 0.227859
+  "last_market_price": 0.229519
 }
