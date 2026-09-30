@@ -523,18 +523,28 @@ def run_accumulator_bot():
     # 1. Reconcile fills from trade history
     reconcile_executed_trades(builder, state)
 
-    # 2. Sync offer IDs & stage on-chain sell orders for any unplaced positions
-    sync_and_stage_sell_offers(builder, state, public_key, server)
-    if len(builder.operations) > 0:
-        action_taken = True
-
-    # 3. Calculate liquid USDC balance
+    # 2. Calculate liquid USDC and XLM balances (subtracting selling liabilities and XLM reserve)
     liquid_usdc = 0.0
+    native_balance = 0.0
+    native_liabilities = 0.0
+
     for b in account_details.get("balances", []):
         if b.get("asset_code") == "USDC" and b.get("asset_issuer") == USDC_ISSUER:
             total = float(b["balance"])
             liabilities = float(b.get("selling_liabilities", 0.0))
             liquid_usdc = max(0.0, total - liabilities)
+        elif b.get("asset_type") == "native":
+            native_balance = float(b["balance"])
+            native_liabilities = float(b.get("selling_liabilities", 0.0))
+
+    subentry_count = account_details.get("subentry_count", 0)
+    base_reserve = (2 + subentry_count) * 0.5
+    liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
+
+    # 3. Sync offer IDs & stage sell orders within liquid_xlm bounds
+    sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
+    if len(builder.operations) > 0:
+        action_taken = True
 
     # 4. Manage trailing buy offer
     if manage_trailing_buy_offer(builder, price, state, liquid_usdc):
@@ -548,6 +558,9 @@ def run_accumulator_bot():
             server.submit_transaction(tx)
             save_state(state)
             print("Transaction submitted and state persisted.")
+        except BadRequestError as e:
+            result_codes = e.response.json().get("extras", {}).get("result_codes", {})
+            print(f"Transaction submission failed with codes: {result_codes}")
         except Exception as e:
             print(f"Transaction submission failed: {e}")
     else:
