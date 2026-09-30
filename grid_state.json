@@ -11,26 +11,6 @@
       "sell_offer_id": "1859711829"
     },
     {
-      "trade_id": "277876803433963521-0",
-      "buy_price": 0.225745,
-      "cost_usdc": 1.0,
-      "xlm_to_sell": 4.3859264,
-      "pending_xlm_gain": 0.0438505,
-      "target_sell_price": 0.228002,
-      "created_at": "2026-09-30T14:02:37Z",
-      "sell_offer_id": "1859717598"
-    },
-    {
-      "trade_id": "277891977553887233-1",
-      "buy_price": 0.22611,
-      "cost_usdc": 1.0,
-      "xlm_to_sell": 4.3788388,
-      "pending_xlm_gain": 0.0437865,
-      "target_sell_price": 0.228371,
-      "created_at": "2026-09-30T18:57:02Z",
-      "sell_offer_id": "1859751970"
-    },
-    {
       "trade_id": "277892424230555649-0",
       "buy_price": 0.226723,
       "cost_usdc": 0.097875,
@@ -49,9 +29,109 @@
       "target_sell_price": 0.22801,
       "created_at": "2026-09-30T19:50:42Z",
       "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896388484796420-1",
+      "buy_price": 0.228002,
+      "cost_usdc": 1.0,
+      "xlm_to_sell": 4.3425014,
+      "pending_xlm_gain": 0.0434247,
+      "target_sell_price": 0.230282,
+      "created_at": "2026-09-30T20:22:37Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896388484796420-2",
+      "buy_price": 0.22801,
+      "cost_usdc": 0.895958,
+      "xlm_to_sell": 3.8905654,
+      "pending_xlm_gain": 0.038904,
+      "target_sell_price": 0.23029,
+      "created_at": "2026-09-30T20:22:37Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896414255386626-0",
+      "buy_price": 0.228372,
+      "cost_usdc": 0.002656,
+      "xlm_to_sell": 0.0115145,
+      "pending_xlm_gain": 0.0001152,
+      "target_sell_price": 0.230656,
+      "created_at": "2026-09-30T20:23:07Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896418549989378-0",
+      "buy_price": 0.228373,
+      "cost_usdc": 0.002347,
+      "xlm_to_sell": 0.0101758,
+      "pending_xlm_gain": 0.0001017,
+      "target_sell_price": 0.230656,
+      "created_at": "2026-09-30T20:23:12Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896422844870658-0",
+      "buy_price": 0.228373,
+      "cost_usdc": 0.002268,
+      "xlm_to_sell": 0.0098336,
+      "pending_xlm_gain": 9.84e-05,
+      "target_sell_price": 0.230657,
+      "created_at": "2026-09-30T20:23:17Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896427139555330-0",
+      "buy_price": 0.228372,
+      "cost_usdc": 0.003192,
+      "xlm_to_sell": 0.0138401,
+      "pending_xlm_gain": 0.0001384,
+      "target_sell_price": 0.230656,
+      "created_at": "2026-09-30T20:23:22Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896431434805250-0",
+      "buy_price": 0.228376,
+      "cost_usdc": 0.000687,
+      "xlm_to_sell": 0.0029784,
+      "pending_xlm_gain": 2.98e-05,
+      "target_sell_price": 0.23066,
+      "created_at": "2026-09-30T20:23:27Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896435730079746-0",
+      "buy_price": 0.228375,
+      "cost_usdc": 0.001107,
+      "xlm_to_sell": 0.0047971,
+      "pending_xlm_gain": 4.8e-05,
+      "target_sell_price": 0.230659,
+      "created_at": "2026-09-30T20:23:32Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896440024453122-0",
+      "buy_price": 0.228373,
+      "cost_usdc": 0.002516,
+      "xlm_to_sell": 0.0109072,
+      "pending_xlm_gain": 0.000109,
+      "target_sell_price": 0.230656,
+      "created_at": "2026-09-30T20:23:37Z",
+      "sell_offer_id": null
+    },
+    {
+      "trade_id": "277896448614440964-0",
+      "buy_price": 0.228371,
+      "cost_usdc": 0.109369,
+      "xlm_to_sell": 0.4741653,
+      "pending_xlm_gain": 0.0047423,
+      "target_sell_price": 0.230655,
+      "created_at": "2026-09-30T20:23:47Z",
+      "sell_offer_id": null
     }
   ],
-  "last_trade_cursor": "277894743512354817-1",
-  "total_xlm_accumulated": 0.221683,
-  "last_market_price": 0.227252
+  "last_trade_cursor": "277896448614440964-0",
+  "total_xlm_accumulated": 0.30932,
+  "last_market_price": 0.228643
 }
