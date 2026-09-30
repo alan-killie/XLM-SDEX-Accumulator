@@ -1,6 +1,6 @@
 import os
 import json
-from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset
+from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset, Price
 from stellar_sdk.exceptions import BadRequestError
 
 # ---------------------------------------------------------
@@ -356,8 +356,13 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             if effective_usdc >= tranche_size_usdc:
                 print(f"Trailing Buy: Clearing Buy Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
                 
+                price_obj = Price(
+                    int(active_buy_offer["price_r"]["n"]), 
+                    int(active_buy_offer["price_r"]["d"])
+                )
+                
                 builder.append_manage_buy_offer_op(
-                    selling=USDC, buying=XLM, amount="0", price=active_buy_offer["price_r"], offer_id=offer_id
+                    selling=USDC, buying=XLM, amount="0", price=price_obj, offer_id=offer_id
                 )
                 
                 xlm_to_buy = tranche_size_usdc / target_buy_price
