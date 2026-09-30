@@ -7,7 +7,8 @@
       "xlm_to_sell": 4.4115831,
       "pending_xlm_gain": 0.0882391,
       "target_sell_price": 0.226676,
-      "created_at": "2026-09-29T23:42:42Z"
+      "created_at": "2026-09-29T23:42:42Z",
+      "sell_offer_id": "1859633043"
     },
     {
       "trade_id": "277833965430247425-0",
@@ -16,7 +17,8 @@
       "xlm_to_sell": 4.4267954,
       "pending_xlm_gain": 0.0885291,
       "target_sell_price": 0.225897,
-      "created_at": "2026-09-30T00:11:27Z"
+      "created_at": "2026-09-30T00:11:27Z",
+      "sell_offer_id": "1859635913"
     },
     {
       "trade_id": "277836121503703041-0",
@@ -25,7 +27,8 @@
       "xlm_to_sell": 0.0650297,
       "pending_xlm_gain": 0.0013005,
       "target_sell_price": 0.225391,
-      "created_at": "2026-09-30T00:53:17Z"
+      "created_at": "2026-09-30T00:53:17Z",
+      "sell_offer_id": "1859638425"
     },
     {
       "trade_id": "277836125798686721-0",
@@ -34,7 +37,8 @@
       "xlm_to_sell": 4.3717038,
       "pending_xlm_gain": 0.0874258,
       "target_sell_price": 0.225391,
-      "created_at": "2026-09-30T00:53:22Z"
+      "created_at": "2026-09-30T00:53:22Z",
+      "sell_offer_id": "1859638425"
     },
     {
       "trade_id": "277842744343502849-9",
@@ -43,10 +47,11 @@
       "xlm_to_sell": 4.4501996,
       "pending_xlm_gain": 0.0890027,
       "target_sell_price": 0.224709,
-      "created_at": "2026-09-30T03:01:47Z"
+      "created_at": "2026-09-30T03:01:47Z",
+      "sell_offer_id": "1859648303"
     }
   ],
   "last_trade_cursor": "277842744343502849-9",
   "total_xlm_accumulated": 0.0,
-  "last_market_price": 0.222713
+  "last_market_price": 0.222705
 }
