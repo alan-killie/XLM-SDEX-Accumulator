@@ -181,7 +181,7 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                 if pos.get("sell_offer_id")
                 else None
             )
-            if pos_offer_id
+            if pos_offer_id:
 
         state["open_positions"] = remaining_positions
 
