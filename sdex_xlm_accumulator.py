@@ -71,7 +71,6 @@ def find_matching_position(open_positions, trade):
     if not open_positions:
         return None, None
 
-    # Derive exact USDC per XLM trade price regardless of base/counter layout
     base_is_xlm = (trade.get("base_asset_type") == "native")
     if base_is_xlm:
         xlm_amt = float(trade.get("base_amount", 0))
@@ -180,9 +179,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv):
 
             # Stage offer if cost >= MIN_SELL_USDC or if these are the only open positions left
             if total_cost < MIN_SELL_USDC and len(state["open_positions"]) > len(positions):
-                continue
-
-            if target_price < state.get("last_market_price", 0.0):
                 continue
 
             builder.append_manage_sell_offer_op(
