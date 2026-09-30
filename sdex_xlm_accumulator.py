@@ -120,10 +120,11 @@ def sync_sell_offer_ids(state, pub_key, srv):
                 and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
             )
             if selling_is_xlm and buying_is_usdc:
+                # Horizon price for selling XLM -> USDC is already in USDC/XLM
                 active_sells.append(
                     {
                         "offer_id": str(offer["id"]),
-                        "price": 1.0 / float(offer["price"]) if float(offer["price"]) > 0 else 0.0,
+                        "price": float(offer["price"]),
                     }
                 )
 
