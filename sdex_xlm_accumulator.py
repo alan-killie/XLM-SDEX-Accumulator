@@ -169,7 +169,8 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
         available_xlm_to_sell = liquid_xlm
 
         for target_price, positions in unmapped_groups.items():
-            if staged_count >= 2 or available_xlm_to_sell <= 0.0001:
+            # Reserve 0.5 XLM for subentry + 0.05 buffer per new staged offer
+            if staged_count >= 2 or available_xlm_to_sell <= 0.55:
                 break
 
             total_cost = sum(p.get("cost_usdc", 0.0) for p in positions)
@@ -181,7 +182,11 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             if total_cost < MIN_SELL_USDC and len(state["open_positions"]) > len(positions):
                 continue
 
-            total_xlm_to_sell = min(requested_xlm, available_xlm_to_sell)
+            max_sellable = max(0.0, available_xlm_to_sell - 0.55)
+            total_xlm_to_sell = min(requested_xlm, max_sellable)
+
+            if total_xlm_to_sell <= 0.0001:
+                continue
 
             builder.append_manage_sell_offer_op(
                 selling=XLM,
@@ -190,7 +195,7 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                 price=f"{target_price:.6f}",
                 offer_id=0,
             )
-            available_xlm_to_sell -= total_xlm_to_sell
+            available_xlm_to_sell -= (total_xlm_to_sell + 0.50)
             staged_count += 1
             print(
                 f"CONSOLIDATED SELL STAGED: {total_xlm_to_sell:.4f} XLM @ ${target_price:.6f} "
@@ -430,7 +435,8 @@ def run_accumulator_bot():
             native_liabilities = float(b.get("selling_liabilities", 0.0))
 
     subentry_count = account_details.get("subentry_count", 0)
-    base_reserve = (2 + subentry_count) * 0.5
+    # Reserve base balance plus 0.1 XLM buffer for tx fees and float rounding
+    base_reserve = ((2 + subentry_count) * 0.5) + 0.1
     liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
 
     sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
@@ -448,7 +454,8 @@ def run_accumulator_bot():
             save_state(state)
             print("Transaction submitted and state persisted.")
         except BadRequestError as e:
-            result_codes = e.response.json().get("extras", {}).get("result_codes", {})
+            raw = getattr(e, "raw_data", {})
+            result_codes = raw.get("extras", {}).get("result_codes", {}) if isinstance(raw, dict) else {}
             print(f"Transaction submission failed with codes: {result_codes}")
         except Exception as e:
             print(f"Transaction submission failed: {e}")
