@@ -26,7 +26,11 @@ PROFIT_MARGIN = 1.010  # +1.0% profit target
 DIP_THRESHOLD = 0.995  # -0.5% buy trigger below mid-price
 REPOSITION_DRIFT = 0.0025  # Reposition if mid-price drifts >0.25%
 MIN_SELL_USDC = 0.50  # Minimum $0.50 fill before staging sell offer
-
+SELL_AMOUNT_TOL = 0.01          # XLM tolerance when matching offer <-> positions
+SELL_PRICE_TOL = 0.0005         # relative price tolerance when mapping offers
+MAX_NEW_SELLS_PER_CYCLE = 2     # new consolidated offers staged per cycle
+XLM_FLOOR = 0.55                # XLM kept back from staging
+SUBENTRY_RESERVE = 0.50         # reserve consumed/released per offer
 
 def merge_into_position(target, pos_to_add):
     """Merges pos_to_add into target using a cost-weighted target sell price."""
@@ -139,157 +143,172 @@ def find_matching_position(open_positions, trade):
     return None, None
 
 
+def fetch_active_sell_offers(srv, pub_key):
+    """Returns every open XLM->USDC sell offer for the account (paginated)."""
+    active, cursor = [], None
+    while True:
+        call_builder = srv.offers().for_account(pub_key).limit(50).order(desc=False)
+        if cursor:
+            call_builder.cursor(cursor)
+
+        records = call_builder.call().get("_embedded", {}).get("records", [])
+        if not records:
+            break
+
+        for offer in records:
+            selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
+            buying = offer.get("buying", {})
+            buying_is_usdc = (
+                buying.get("asset_code") == "USDC"
+                and buying.get("asset_issuer") == USDC_ISSUER
+            )
+            if selling_is_xlm and buying_is_usdc:
+                active.append(
+                    {
+                        "offer_id": str(offer["id"]),
+                        "price": float(offer["price"]),
+                        "amount": float(offer.get("amount", 0.0)),
+                        "used": False,
+                    }
+                )
+
+        cursor = str(records[-1].get("paging_token", records[-1]["id"]))
+        if len(records) < 50:
+            break
+    return active
+
+
+def group_unmapped_positions(positions):
+    """Groups positions without a sell_offer_id by target price, keeping
+    state order inside each group (staging and mapping both rely on it)."""
+    groups = {}
+    for pos in positions:
+        if not pos.get("sell_offer_id"):
+            groups.setdefault(round(pos["target_sell_price"], 6), []).append(pos)
+    return groups
+
+
 def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
     if not state.get("open_positions"):
         return
 
+    # Phase 0: read-only fetch. If Horizon fails, nothing has been mutated.
     try:
-        active_sells = []
-        cursor = None
-        while True:
-            call_builder = srv.offers().for_account(pub_key).limit(50)
-            if cursor:
-                call_builder.cursor(cursor)
-
-            res = call_builder.call().get("_embedded", {}).get("records", [])
-            if not res:
-                break
-
-            for offer in res:
-                selling_is_xlm = (
-                    offer.get("selling", {}).get("asset_type") == "native"
-                )
-                buying_is_usdc = (
-                    offer.get("buying", {}).get("asset_code") == "USDC"
-                    and offer.get("buying", {}).get("asset_issuer")
-                    == USDC_ISSUER
-                )
-                if selling_is_xlm and buying_is_usdc:
-                    active_sells.append(
-                        {
-                            "offer_id": str(offer["id"]),
-                            "price": float(offer["price"]),
-                            "amount": float(offer.get("amount", 0.0)),
-                            "used": False,
-                        }
-                    )
-            cursor = str(res[-1]["id"])
-
-        remaining_positions = []
-        for pos in state["open_positions"]:
-            pos_offer_id = (
-                str(pos.get("sell_offer_id"))
-                if pos.get("sell_offer_id")
-                else None
-            )
-            if pos_offer_id:
-                match = next(
-                    (
-                        o
-                        for o in active_sells
-                        if o["offer_id"] == pos_offer_id
-                    ),
-                    None,
-                )
-                if match:
-                    if abs(pos["xlm_to_sell"] - match["amount"]) < 0.01:
-                        match["used"] = True
-                        remaining_positions.append(pos)
-                    else:
-                        pos["sell_offer_id"] = None
-                        remaining_positions.append(pos)
-                else:
-                    pos["sell_offer_id"] = None
-                    remaining_positions.append(pos)
-            else:
-                remaining_positions.append(pos)
-
-        state["open_positions"] = remaining_positions
-
-        # Map active unassigned offers to matching state positions
-        for offer in active_sells:
-            if offer["used"]:
-                continue
-            matching_pos = next(
-                (
-                    p
-                    for p in state["open_positions"]
-                    if not p.get("sell_offer_id")
-                    and abs(p.get("target_sell_price", 0.0) - offer["price"]) / offer["price"] < 0.0005
-                    and abs(p.get("xlm_to_sell", 0.0) - offer["amount"]) < 0.01
-                ),
-                None,
-            )
-            if matching_pos:
-                matching_pos["sell_offer_id"] = offer["offer_id"]
-                offer["used"] = True
-                print(
-                    f"Mapped Sell Offer ID {offer['offer_id']} to target"
-                    f" ${matching_pos['target_sell_price']:.6f}"
-                )
-
-        # Cancel orphaned on-chain offers to release liquid XLM liabilities
-        for offer in active_sells:
-            if not offer["used"]:
-                builder.append_manage_sell_offer_op(
-                    selling=XLM,
-                    buying=USDC,
-                    amount="0",
-                    price=f"{offer['price']:.6f}",
-                    offer_id=int(offer["offer_id"]),
-                )
-                print(
-                    f"CANCELLED ORPHANED SELL OFFER ID {offer['offer_id']} to release liquid XLM"
-                )
-
-        unmapped_groups = {}
-        for pos in state["open_positions"]:
-            if not pos.get("sell_offer_id"):
-                target_key = round(pos["target_sell_price"], 6)
-                unmapped_groups.setdefault(target_key, []).append(pos)
-
-        staged_count = 0
-        available_xlm_to_sell = liquid_xlm
-
-        for target_price, positions in unmapped_groups.items():
-            if staged_count >= 2 or available_xlm_to_sell <= 0.55:
-                break
-
-            total_cost = sum(p.get("cost_usdc", 0.0) for p in positions)
-            requested_xlm = round(
-                sum(p["xlm_to_sell"] for p in positions), 7
-            )
-
-            if requested_xlm <= 0.0001:
-                continue
-
-            if total_cost < MIN_SELL_USDC and len(
-                state["open_positions"]
-            ) > len(positions):
-                continue
-
-            max_sellable = max(0.0, available_xlm_to_sell - 0.55)
-            total_xlm_to_sell = min(requested_xlm, max_sellable)
-
-            if (total_xlm_to_sell * target_price) < MIN_SELL_USDC:
-                continue
-
-            builder.append_manage_sell_offer_op(
-                selling=XLM,
-                buying=USDC,
-                amount=f"{total_xlm_to_sell:.7f}",
-                price=f"{target_price:.6f}",
-                offer_id=0,
-            )
-            available_xlm_to_sell -= total_xlm_to_sell + 0.50
-            staged_count += 1
-            print(
-                f"CONSOLIDATED SELL STAGED: {total_xlm_to_sell:.4f} XLM @"
-                f" ${target_price:.6f} for {len(positions)} position(s)"
-            )
-
+        active_sells = fetch_active_sell_offers(srv, pub_key)
     except Exception as e:
-        print(f"Notice: Failed to sync/stage sell offer IDs ({e})")
+        print(f"Notice: Failed to fetch open sell offers ({e})")
+        return
+
+    positions = state["open_positions"]
+    offers_by_id = {o["offer_id"]: o for o in active_sells}
+
+    # Phase 1: validate existing mappings at the GROUP level.
+    # All positions sharing a sell_offer_id must sum to the on-chain amount.
+    mapped_groups = {}
+    for pos in positions:
+        if pos.get("sell_offer_id"):
+            mapped_groups.setdefault(str(pos["sell_offer_id"]), []).append(pos)
+
+    for offer_id, group in mapped_groups.items():
+        offer = offers_by_id.get(offer_id)
+        group_xlm = sum(p.get("xlm_to_sell", 0.0) for p in group)
+        if offer and abs(group_xlm - offer["amount"]) < SELL_AMOUNT_TOL:
+            offer["used"] = True  # healthy: leave untouched
+        else:
+            # Offer gone or amount drifted. Unmap only; profit accounting
+            # stays exclusively in reconcile_executed_trades().
+            for pos in group:
+                pos["sell_offer_id"] = None
+
+    # Phase 2: adopt unclaimed on-chain offers. Match a price group whose
+    # leading positions (state order) sum to the offer amount.
+    for offer in active_sells:
+        if offer["used"] or offer["price"] <= 0:
+            continue
+
+        for key, group in group_unmapped_positions(positions).items():
+            if abs(key - offer["price"]) / offer["price"] >= SELL_PRICE_TOL:
+                continue
+
+            running = 0.0
+            for k, pos in enumerate(group, start=1):
+                running += pos.get("xlm_to_sell", 0.0)
+                if abs(running - offer["amount"]) < SELL_AMOUNT_TOL:
+                    for p in group[:k]:
+                        p["sell_offer_id"] = offer["offer_id"]
+                    offer["used"] = True
+                    print(
+                        f"Mapped Sell Offer ID {offer['offer_id']} to"
+                        f" {k} position(s) @ ${key:.6f}"
+                    )
+                    break
+            if offer["used"]:
+                break
+
+    # Phase 3: cancel what is still unclaimed, and credit the released XLM
+    # and subentry reserve so restaging can happen in the same transaction.
+    available_xlm_to_sell = liquid_xlm
+    for offer in active_sells:
+        if offer["used"]:
+            continue
+        builder.append_manage_sell_offer_op(
+            selling=XLM,
+            buying=USDC,
+            amount="0",
+            price=f"{offer['price']:.6f}",
+            offer_id=int(offer["offer_id"]),
+        )
+        available_xlm_to_sell += offer["amount"] + SUBENTRY_RESERVE
+        print(
+            f"CANCELLED ORPHANED SELL OFFER ID {offer['offer_id']}"
+            f" ({offer['amount']:.4f} XLM released)"
+        )
+
+    # Phase 4: stage consolidated offers from unmapped positions.
+    # Whole positions only, so every staged offer stays mappable next cycle.
+    staged_count = 0
+    for target_price, group in sorted(group_unmapped_positions(positions).items()):
+        if (
+            staged_count >= MAX_NEW_SELLS_PER_CYCLE
+            or available_xlm_to_sell <= XLM_FLOOR
+        ):
+            break
+
+        budget = max(0.0, available_xlm_to_sell - XLM_FLOOR)
+        batch, batch_xlm, batch_cost = [], 0.0, 0.0
+        for pos in group:
+            pos_xlm = pos.get("xlm_to_sell", 0.0)
+            if pos_xlm <= 0.0001:
+                continue
+            if batch_xlm + pos_xlm > budget:
+                break
+            batch.append(pos)
+            batch_xlm += pos_xlm
+            batch_cost += pos.get("cost_usdc", 0.0)
+
+        if not batch:
+            continue
+
+        # Wait for dust to accumulate unless these are the only positions left
+        if batch_cost < MIN_SELL_USDC and len(positions) > len(batch):
+            continue
+        if batch_xlm * target_price < MIN_SELL_USDC:
+            continue
+
+        batch_xlm = round(batch_xlm, 7)
+        builder.append_manage_sell_offer_op(
+            selling=XLM,
+            buying=USDC,
+            amount=f"{batch_xlm:.7f}",
+            price=f"{target_price:.6f}",
+            offer_id=0,
+        )
+        available_xlm_to_sell -= batch_xlm + SUBENTRY_RESERVE
+        staged_count += 1
+        print(
+            f"CONSOLIDATED SELL STAGED: {batch_xlm:.4f} XLM @"
+            f" ${target_price:.6f} for {len(batch)} position(s)"
+        )
 
 
 def reconcile_executed_trades(builder, state):
