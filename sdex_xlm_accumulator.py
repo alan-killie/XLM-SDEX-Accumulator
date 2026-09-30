@@ -278,7 +278,7 @@ def reconcile_executed_trades(builder, state):
                         target = unmapped_positions[-1]
                         target["cost_usdc"] = round(target["cost_usdc"] + usdc_paid, 6)
                         target["xlm_to_sell"] = round(target["xlm_to_sell"] + xlm_to_sell, 7)
-                        target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pending_xlm_gain, 7)
+                        target["pending_xlm_gain"] = round(target.get("pending_xlm_gain", 0.0) + pending_xlm_gain, 7)
                         print(f"DUST MERGED: Added ${usdc_paid:.4f} fill to active position {target['trade_id']}")
                     else:
                         state["open_positions"].append({
@@ -362,7 +362,8 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
 
     if active_buy_offer:
         offer_id = int(active_buy_offer["id"])
-        existing_buy_price = float(active_buy_offer["price"])
+        xlm_per_usdc = float(active_buy_offer["price"])
+        existing_buy_price = 1.0 / xlm_per_usdc if xlm_per_usdc > 0 else 0.0
 
         drift = abs(current_price - (existing_buy_price / DIP_THRESHOLD)) / current_price
 
