@@ -185,7 +185,8 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             max_sellable = max(0.0, available_xlm_to_sell - 0.55)
             total_xlm_to_sell = min(requested_xlm, max_sellable)
 
-            if total_xlm_to_sell <= 0.0001:
+            # Skip dust sells below threshold to avoid wasting subentry reserves
+            if (total_xlm_to_sell * target_price) < MIN_SELL_USDC:
                 continue
 
             builder.append_manage_sell_offer_op(
@@ -330,6 +331,9 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     target_buy_price = round(current_price * DIP_THRESHOLD, 6)
     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
 
+    # Safety buffer to prevent rounding precision underfunding
+    usable_usdc = max(0.0, liquid_usdc - 0.02)
+
     open_offers = server.offers().for_account(public_key).limit(50).call().get("_embedded", {}).get("records", [])
     active_buy_offer = None
 
@@ -356,7 +360,7 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
 
         if drift >= REPOSITION_DRIFT:
             usdc_locked_in_offer = float(active_buy_offer["amount"])
-            effective_usdc = liquid_usdc + usdc_locked_in_offer
+            effective_usdc = usable_usdc + usdc_locked_in_offer
 
             if effective_usdc >= tranche_size_usdc:
                 print(f"Trailing Buy: Clearing Buy Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
@@ -370,7 +374,7 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                     selling=USDC, buying=XLM, amount="0", price=price_obj, offer_id=offer_id
                 )
                 
-                xlm_to_buy = tranche_size_usdc / target_buy_price
+                xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
                 builder.append_manage_buy_offer_op(
                     selling=USDC,
                     buying=XLM,
@@ -382,8 +386,8 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             else:
                 print(f"Insufficient USDC (${effective_usdc:.2f}) to reposition buy offer.")
     else:
-        if liquid_usdc >= tranche_size_usdc and len(state["open_positions"]) < NUM_TIERS:
-            xlm_to_buy = tranche_size_usdc / target_buy_price
+        if usable_usdc >= tranche_size_usdc and len(state["open_positions"]) < NUM_TIERS:
+            xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
             print(f"Trailing Buy: Placing new bid for {xlm_to_buy:.4f} XLM @ ${target_buy_price:.4f}")
             builder.append_manage_buy_offer_op(
                 selling=USDC,
@@ -394,7 +398,7 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             )
             return True
         else:
-            print(f"Skipping buy placement: ${liquid_usdc:.2f} liquid USDC available.")
+            print(f"Skipping buy placement: ${usable_usdc:.2f} usable USDC available.")
 
     return False
 
@@ -435,15 +439,16 @@ def run_accumulator_bot():
             native_liabilities = float(b.get("selling_liabilities", 0.0))
 
     subentry_count = account_details.get("subentry_count", 0)
-    # Reserve base balance plus 0.1 XLM buffer for tx fees and float rounding
     base_reserve = ((2 + subentry_count) * 0.5) + 0.1
     liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
 
-    sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
-    if len(builder.operations) > 0:
+    # 1. Manage trailing buy offer FIRST to release locked USDC/subentry reserve
+    if manage_trailing_buy_offer(builder, price, state, liquid_usdc):
         action_taken = True
 
-    if manage_trailing_buy_offer(builder, price, state, liquid_usdc):
+    # 2. Stage consolidated sell offers second
+    sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
+    if len(builder.operations) > 0:
         action_taken = True
 
     if action_taken:
@@ -454,9 +459,12 @@ def run_accumulator_bot():
             save_state(state)
             print("Transaction submitted and state persisted.")
         except BadRequestError as e:
-            raw = getattr(e, "raw_data", {})
-            result_codes = raw.get("extras", {}).get("result_codes", {}) if isinstance(raw, dict) else {}
-            print(f"Transaction submission failed with codes: {result_codes}")
+            try:
+                err_data = json.loads(e.text)
+                result_codes = err_data.get("extras", {}).get("result_codes", {})
+                print(f"Transaction submission failed with codes: {result_codes}")
+            except Exception:
+                print(f"Transaction submission failed: {e}")
         except Exception as e:
             print(f"Transaction submission failed: {e}")
     else:
