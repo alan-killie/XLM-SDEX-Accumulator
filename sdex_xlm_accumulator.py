@@ -1,6 +1,6 @@
 import json
 import os
-from stellar_sdk import Asset, Keypair, Network, Price, Server, TransactionBuilder
+from stellar_sdk import Asset, Keypair, Network, Server, TransactionBuilder
 from stellar_sdk.exceptions import BadRequestError
 
 # ---------------------------------------------------------
@@ -20,12 +20,12 @@ USDC = Asset("USDC", USDC_ISSUER)
 
 STATE_FILE = "grid_state.json"
 
-TOTAL_CAPITAL_USDC = 10.0   # Total USDC working capital
-NUM_TIERS = 10              # 10 tranches ($1.00 USDC per trade)
-PROFIT_MARGIN = 1.010       # +1.0% profit target
-DIP_THRESHOLD = 0.995       # -0.5% buy trigger below mid-price
-REPOSITION_DRIFT = 0.0025   # Reposition if mid-price drifts >0.25%
-MIN_SELL_USDC = 0.50        # Minimum $0.50 fill before staging sell offer
+TOTAL_CAPITAL_USDC = 10.0  # Total USDC working capital
+NUM_TIERS = 10  # 10 tranches ($1.00 USDC per trade)
+PROFIT_MARGIN = 1.010  # +1.0% profit target
+DIP_THRESHOLD = 0.995  # -0.5% buy trigger below mid-price
+REPOSITION_DRIFT = 0.0025  # Reposition if mid-price drifts >0.25%
+MIN_SELL_USDC = 0.50  # Minimum $0.50 fill before staging sell offer
 
 
 def merge_into_position(target, pos_to_add):
@@ -33,19 +33,29 @@ def merge_into_position(target, pos_to_add):
     total_cost = target["cost_usdc"] + pos_to_add["cost_usdc"]
     if total_cost <= 0:
         return
-    
+
     # Cost-weighted average target price
     weighted_target = (
-        (target["cost_usdc"] * target["target_sell_price"]) +
-        (pos_to_add["cost_usdc"] * pos_to_add["target_sell_price"])
+        (target["cost_usdc"] * target["target_sell_price"])
+        + (pos_to_add["cost_usdc"] * pos_to_add["target_sell_price"])
     ) / total_cost
 
     target["cost_usdc"] = round(total_cost, 6)
     target["target_sell_price"] = round(weighted_target, 6)
-    target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos_to_add["xlm_to_sell"], 7)
-    target["pending_xlm_gain"] = round(
-        target.get("pending_xlm_gain", 0.0) + pos_to_add.get("pending_xlm_gain", 0.0), 7
+    target["xlm_to_sell"] = round(
+        target["xlm_to_sell"] + pos_to_add["xlm_to_sell"], 7
     )
+    target["pending_xlm_gain"] = round(
+        target.get("pending_xlm_gain", 0.0)
+        + pos_to_add.get("pending_xlm_gain", 0.0),
+        7,
+    )
+
+    # Recalculate average effective buy price
+    total_xlm = target["xlm_to_sell"] + target["pending_xlm_gain"]
+    if total_xlm > 0:
+        target["buy_price"] = round(target["cost_usdc"] / total_xlm, 6)
+
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -56,7 +66,11 @@ def load_state():
         cleaned = []
         for pos in positions:
             unmapped = [p for p in cleaned if not p.get("sell_offer_id")]
-            if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and unmapped:
+            if (
+                pos.get("cost_usdc", 0) < 0.10
+                and not pos.get("sell_offer_id")
+                and unmapped
+            ):
                 merge_into_position(unmapped[-1], pos)
             else:
                 cleaned.append(pos)
@@ -90,14 +104,16 @@ def get_mid_price():
 
 
 def is_circle_usdc(asset_type, code, issuer):
-    return asset_type != "native" and code == "USDC" and issuer == USDC_ISSUER
+    return (
+        asset_type != "native" and code == "USDC" and issuer == USDC_ISSUER
+    )
 
 
 def find_matching_position(open_positions, trade):
     if not open_positions:
         return None, None
 
-    base_is_xlm = (trade.get("base_asset_type") == "native")
+    base_is_xlm = trade.get("base_asset_type") == "native"
     if base_is_xlm:
         xlm_amt = float(trade.get("base_amount", 0))
         usdc_amt = float(trade.get("counter_amount", 0))
@@ -134,16 +150,19 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             call_builder = srv.offers().for_account(pub_key).limit(50)
             if cursor:
                 call_builder.cursor(cursor)
-            
+
             res = call_builder.call().get("_embedded", {}).get("records", [])
             if not res:
                 break
 
             for offer in res:
-                selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
+                selling_is_xlm = (
+                    offer.get("selling", {}).get("asset_type") == "native"
+                )
                 buying_is_usdc = (
                     offer.get("buying", {}).get("asset_code") == "USDC"
-                    and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
+                    and offer.get("buying", {}).get("asset_issuer")
+                    == USDC_ISSUER
                 )
                 if selling_is_xlm and buying_is_usdc:
                     active_sells.append(
@@ -157,9 +176,20 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
 
         remaining_positions = []
         for pos in state["open_positions"]:
-            pos_offer_id = str(pos.get("sell_offer_id")) if pos.get("sell_offer_id") else None
+            pos_offer_id = (
+                str(pos.get("sell_offer_id"))
+                if pos.get("sell_offer_id")
+                else None
+            )
             if pos_offer_id:
-                match = next((o for o in active_sells if o["offer_id"] == pos_offer_id), None)
+                match = next(
+                    (
+                        o
+                        for o in active_sells
+                        if o["offer_id"] == pos_offer_id
+                    ),
+                    None,
+                )
                 if match:
                     match["used"] = True
                     remaining_positions.append(pos)
@@ -175,13 +205,20 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             if offer["used"]:
                 continue
             matching_positions = [
-                p for p in state["open_positions"]
-                if not p.get("sell_offer_id") and abs(p.get("target_sell_price", 0.0) - offer["price"]) / offer["price"] < 0.001
+                p
+                for p in state["open_positions"]
+                if not p.get("sell_offer_id")
+                and abs(p.get("target_sell_price", 0.0) - offer["price"])
+                / offer["price"]
+                < 0.001
             ]
             if matching_positions:
                 for p in matching_positions:
                     p["sell_offer_id"] = offer["offer_id"]
-                    print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${p['target_sell_price']:.6f}")
+                    print(
+                        f"Mapped Sell Offer ID {offer['offer_id']} to target"
+                        f" ${p['target_sell_price']:.6f}"
+                    )
                 offer["used"] = True
 
         unmapped_groups = {}
@@ -198,12 +235,16 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                 break
 
             total_cost = sum(p.get("cost_usdc", 0.0) for p in positions)
-            requested_xlm = round(sum(p["xlm_to_sell"] for p in positions), 7)
+            requested_xlm = round(
+                sum(p["xlm_to_sell"] for p in positions), 7
+            )
 
             if requested_xlm <= 0.0001:
                 continue
 
-            if total_cost < MIN_SELL_USDC and len(state["open_positions"]) > len(positions):
+            if total_cost < MIN_SELL_USDC and len(
+                state["open_positions"]
+            ) > len(positions):
                 continue
 
             max_sellable = max(0.0, available_xlm_to_sell - 0.55)
@@ -219,11 +260,11 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                 price=f"{target_price:.6f}",
                 offer_id=0,
             )
-            available_xlm_to_sell -= (total_xlm_to_sell + 0.50)
+            available_xlm_to_sell -= total_xlm_to_sell + 0.50
             staged_count += 1
             print(
-                f"CONSOLIDATED SELL STAGED: {total_xlm_to_sell:.4f} XLM @ ${target_price:.6f} "
-                f"for {len(positions)} position(s)"
+                f"CONSOLIDATED SELL STAGED: {total_xlm_to_sell:.4f} XLM @"
+                f" ${target_price:.6f} for {len(positions)} position(s)"
             )
 
     except Exception as e:
@@ -233,11 +274,20 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
 def reconcile_executed_trades(builder, state):
     try:
         if not state.get("last_trade_cursor"):
-            latest = server.trades().for_account(public_key).order(desc=True).limit(1).call()
+            latest = (
+                server.trades()
+                .for_account(public_key)
+                .order(desc=True)
+                .limit(1)
+                .call()
+            )
             records = latest.get("_embedded", {}).get("records", [])
             if records:
                 state["last_trade_cursor"] = records[0]["paging_token"]
-                print(f"Initialized trade cursor to latest fill ({state['last_trade_cursor']}).")
+                print(
+                    "Initialized trade cursor to latest fill"
+                    f" ({state['last_trade_cursor']})."
+                )
             return
 
         trades_call = (
@@ -253,31 +303,53 @@ def reconcile_executed_trades(builder, state):
         for trade in records:
             state["last_trade_cursor"] = trade["paging_token"]
 
-            base_is_xlm = (trade.get("base_asset_type") == "native")
-            counter_is_xlm = (trade.get("counter_asset_type") == "native")
+            base_is_xlm = trade.get("base_asset_type") == "native"
+            counter_is_xlm = trade.get("counter_asset_type") == "native"
             base_is_usdc = is_circle_usdc(
-                trade.get("base_asset_type"), trade.get("base_asset_code"), trade.get("base_asset_issuer")
+                trade.get("base_asset_type"),
+                trade.get("base_asset_code"),
+                trade.get("base_asset_issuer"),
             )
             counter_is_usdc = is_circle_usdc(
-                trade.get("counter_asset_type"), trade.get("counter_asset_code"), trade.get("counter_asset_issuer")
+                trade.get("counter_asset_type"),
+                trade.get("counter_asset_code"),
+                trade.get("counter_asset_issuer"),
             )
 
-            if not ((base_is_xlm and counter_is_usdc) or (base_is_usdc and counter_is_xlm)):
+            if not (
+                (base_is_xlm and counter_is_usdc)
+                or (base_is_usdc and counter_is_xlm)
+            ):
                 continue
 
-            is_base = (trade.get("base_account") == public_key)
-            is_counter = (trade.get("counter_account") == public_key)
+            is_base = trade.get("base_account") == public_key
+            is_counter = trade.get("counter_account") == public_key
             base_is_seller = trade.get("base_is_seller", False)
 
-            bought_via_base = base_is_xlm and ((is_base and not base_is_seller) or (is_counter and base_is_seller))
-            bought_via_counter = counter_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
+            bought_via_base = base_is_xlm and (
+                (is_base and not base_is_seller)
+                or (is_counter and base_is_seller)
+            )
+            bought_via_counter = counter_is_xlm and (
+                (is_base and base_is_seller)
+                or (is_counter and not base_is_seller)
+            )
 
-            sold_via_base = base_is_xlm and ((is_base and base_is_seller) or (is_counter and not base_is_seller))
-            sold_via_counter = counter_is_xlm and ((is_base and not base_is_seller) or (is_counter and base_is_seller))
+            sold_via_base = base_is_xlm and (
+                (is_base and base_is_seller)
+                or (is_counter and not base_is_seller)
+            )
+            sold_via_counter = counter_is_xlm and (
+                (is_base and not base_is_seller)
+                or (is_counter and base_is_seller)
+            )
 
             if bought_via_base or bought_via_counter:
                 trade_id_str = str(trade["id"])
-                if any(p.get("trade_id") == trade_id_str for p in state["open_positions"]):
+                if any(
+                    p.get("trade_id") == trade_id_str
+                    for p in state["open_positions"]
+                ):
                     continue
 
                 if base_is_xlm:
@@ -294,24 +366,36 @@ def reconcile_executed_trades(builder, state):
                     xlm_to_sell = round(usdc_paid / target_sell_price, 7)
                     pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
 
-                    unmapped_positions = [p for p in state["open_positions"] if not p.get("sell_offer_id")]
+                    unmapped_positions = [
+                        p
+                        for p in state["open_positions"]
+                        if not p.get("sell_offer_id")
+                    ]
                     if usdc_paid < 0.10 and unmapped_positions:
-                        target = unmapped_positions[-1]
-                        target["cost_usdc"] = round(target["cost_usdc"] + usdc_paid, 6)
-                        target["xlm_to_sell"] = round(target["xlm_to_sell"] + xlm_to_sell, 7)
-                        target["pending_xlm_gain"] = round(target.get("pending_xlm_gain", 0.0) + pending_xlm_gain, 7)
-                        print(f"DUST MERGED: Added ${usdc_paid:.4f} fill to active position {target['trade_id']}")
-                    else:
-                        state["open_positions"].append({
-                            "trade_id": trade_id_str,
-                            "buy_price": round(buy_price, 6),
-                            "cost_usdc": round(usdc_paid, 6),
+                        pos_to_add = {
+                            "cost_usdc": usdc_paid,
+                            "target_sell_price": target_sell_price,
                             "xlm_to_sell": xlm_to_sell,
                             "pending_xlm_gain": pending_xlm_gain,
-                            "target_sell_price": target_sell_price,
-                            "created_at": trade.get("ledger_close_time"),
-                            "sell_offer_id": None
-                        })
+                        }
+                        merge_into_position(unmapped_positions[-1], pos_to_add)
+                        print(
+                            f"DUST MERGED: Added ${usdc_paid:.4f} fill to active"
+                            f" position {unmapped_positions[-1]['trade_id']}"
+                        )
+                    else:
+                        state["open_positions"].append(
+                            {
+                                "trade_id": trade_id_str,
+                                "buy_price": round(buy_price, 6),
+                                "cost_usdc": round(usdc_paid, 6),
+                                "xlm_to_sell": xlm_to_sell,
+                                "pending_xlm_gain": pending_xlm_gain,
+                                "target_sell_price": target_sell_price,
+                                "created_at": trade.get("ledger_close_time"),
+                                "sell_offer_id": None,
+                            }
+                        )
 
             elif sold_via_base or sold_via_counter:
                 if base_is_xlm:
@@ -320,7 +404,9 @@ def reconcile_executed_trades(builder, state):
                     xlm_sold = float(trade.get("counter_amount", 0))
 
                 while xlm_sold > 0.0001 and state["open_positions"]:
-                    idx, match_type = find_matching_position(state["open_positions"], trade)
+                    idx, match_type = find_matching_position(
+                        state["open_positions"], trade
+                    )
                     if idx is None:
                         break
 
@@ -333,26 +419,38 @@ def reconcile_executed_trades(builder, state):
 
                     portion = min(xlm_sold, needed)
                     fill_ratio = portion / needed if needed > 0 else 1.0
-                    realized_gain = pos.get("pending_xlm_gain", 0.0) * fill_ratio
-
-                    state["total_xlm_accumulated"] = round(
-                        state.get("total_xlm_accumulated", 0.0) + realized_gain, 7
+                    realized_gain = (
+                        pos.get("pending_xlm_gain", 0.0) * fill_ratio
                     )
 
-                    pos["xlm_to_sell"] = round(max(0.0, pos["xlm_to_sell"] - portion), 7)
+                    state["total_xlm_accumulated"] = round(
+                        state.get("total_xlm_accumulated", 0.0) + realized_gain,
+                        7,
+                    )
+
+                    pos["xlm_to_sell"] = round(
+                        max(0.0, pos["xlm_to_sell"] - portion), 7
+                    )
                     pos["pending_xlm_gain"] = round(
-                        max(0.0, pos.get("pending_xlm_gain", 0.0) - realized_gain), 7
+                        max(
+                            0.0, pos.get("pending_xlm_gain", 0.0) - realized_gain
+                        ),
+                        7,
                     )
                     xlm_sold = round(xlm_sold - portion, 7)
 
                     print(
-                        f"SELL FILL MATCHED ({match_type}): Applied {portion:.4f} XLM to trade {pos['trade_id']}. "
+                        f"SELL FILL MATCHED ({match_type}): Applied"
+                        f" {portion:.4f} XLM to trade {pos['trade_id']}. "
                         f"Realized +{realized_gain:.7f} XLM gain."
                     )
 
                     if pos["xlm_to_sell"] <= 0.0001:
                         state["open_positions"].pop(idx)
-                        print(f"POSITION FULLY CLOSED: Removed {pos['trade_id']} from grid state.")
+                        print(
+                            f"POSITION FULLY CLOSED: Removed {pos['trade_id']}"
+                            " from grid state."
+                        )
 
     except Exception as e:
         print(f"Notice: Trade reconciliation check failed ({e})")
@@ -364,7 +462,14 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
 
     usable_usdc = max(0.0, liquid_usdc - 0.02)
 
-    open_offers = server.offers().for_account(public_key).limit(50).call().get("_embedded", {}).get("records", [])
+    open_offers = (
+        server.offers()
+        .for_account(public_key)
+        .limit(50)
+        .call()
+        .get("_embedded", {})
+        .get("records", [])
+    )
     active_buy_offer = None
 
     for offer in open_offers:
@@ -372,10 +477,10 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
         buying_asset = offer.get("buying", {})
 
         selling_is_usdc = (
-            selling_asset.get("asset_code") == "USDC" 
+            selling_asset.get("asset_code") == "USDC"
             and selling_asset.get("asset_issuer") == USDC_ISSUER
         )
-        buying_is_xlm = (buying_asset.get("asset_type") == "native")
+        buying_is_xlm = buying_asset.get("asset_type") == "native"
 
         if selling_is_usdc and buying_is_xlm:
             active_buy_offer = offer
@@ -386,16 +491,22 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
         xlm_per_usdc = float(active_buy_offer["price"])
         existing_buy_price = 1.0 / xlm_per_usdc if xlm_per_usdc > 0 else 0.0
 
-        drift = abs(current_price - (existing_buy_price / DIP_THRESHOLD)) / current_price
+        drift = (
+            abs(current_price - (existing_buy_price / DIP_THRESHOLD))
+            / current_price
+        )
 
         if drift >= REPOSITION_DRIFT:
             usdc_locked_in_offer = float(active_buy_offer["amount"])
             effective_usdc = usable_usdc + usdc_locked_in_offer
 
             if effective_usdc >= tranche_size_usdc:
-                print(f"Trailing Buy: Repositioning Offer ID {offer_id} to ${target_buy_price:.4f}")
+                print(
+                    f"Trailing Buy: Repositioning Offer ID {offer_id} to"
+                    f" ${target_buy_price:.4f}"
+                )
                 xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
-                
+
                 builder.append_manage_buy_offer_op(
                     selling=USDC,
                     buying=XLM,
@@ -405,11 +516,20 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                 )
                 return True, False
             else:
-                print(f"Insufficient USDC (${effective_usdc:.2f}) to reposition buy offer.")
+                print(
+                    f"Insufficient USDC (${effective_usdc:.2f}) to reposition"
+                    " buy offer."
+                )
     else:
-        if usable_usdc >= tranche_size_usdc and len(state["open_positions"]) < NUM_TIERS:
+        if (
+            usable_usdc >= tranche_size_usdc
+            and len(state["open_positions"]) < NUM_TIERS
+        ):
             xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
-            print(f"Trailing Buy: Placing new bid for {xlm_to_buy:.4f} XLM @ ${target_buy_price:.4f}")
+            print(
+                f"Trailing Buy: Placing new bid for {xlm_to_buy:.4f} XLM @"
+                f" ${target_buy_price:.4f}"
+            )
             builder.append_manage_buy_offer_op(
                 selling=USDC,
                 buying=XLM,
@@ -419,7 +539,10 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             )
             return True, True
         else:
-            print(f"Skipping buy placement: ${usable_usdc:.2f} usable USDC available.")
+            print(
+                "Skipping buy placement:"
+                f" ${usable_usdc:.2f} usable USDC available."
+            )
 
     return False, False
 
@@ -451,7 +574,10 @@ def run_accumulator_bot():
     native_liabilities = 0.0
 
     for b in account_details.get("balances", []):
-        if b.get("asset_code") == "USDC" and b.get("asset_issuer") == USDC_ISSUER:
+        if (
+            b.get("asset_code") == "USDC"
+            and b.get("asset_issuer") == USDC_ISSUER
+        ):
             total = float(b["balance"])
             liabilities = float(b.get("selling_liabilities", 0.0))
             liquid_usdc = max(0.0, total - liabilities)
@@ -463,7 +589,9 @@ def run_accumulator_bot():
     base_reserve = ((2 + subentry_count) * 0.5) + 0.1
     liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
 
-    buy_action, created_new_subentry = manage_trailing_buy_offer(builder, price, state, liquid_usdc)
+    buy_action, created_new_subentry = manage_trailing_buy_offer(
+        builder, price, state, liquid_usdc
+    )
     if buy_action:
         action_taken = True
         if created_new_subentry:
@@ -483,8 +611,12 @@ def run_accumulator_bot():
         except BadRequestError as e:
             try:
                 err_data = json.loads(e.text)
-                result_codes = err_data.get("extras", {}).get("result_codes", {})
-                print(f"Transaction submission failed with codes: {result_codes}")
+                result_codes = err_data.get("extras", {}).get(
+                    "result_codes", {}
+                )
+                print(
+                    f"Transaction submission failed with codes: {result_codes}"
+                )
             except Exception:
                 print(f"Transaction submission failed: {e}")
         except Exception as e:
