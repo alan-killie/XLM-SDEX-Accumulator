@@ -37,14 +37,14 @@ def load_state():
         positions = state.get("open_positions", [])
         cleaned = []
         for pos in positions:
-    unmapped = [p for p in cleaned if not p.get("sell_offer_id")]
-    if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and unmapped:
-        target = unmapped[-1]
-        target["cost_usdc"] = round(target["cost_usdc"] + pos["cost_usdc"], 6)
-        target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos["xlm_to_sell"], 7)
-        target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pos["pending_xlm_gain"], 7)
-    else:
-        cleaned.append(pos)
+            unmapped = [p for p in cleaned if not p.get("sell_offer_id")]
+            if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and unmapped:
+                target = unmapped[-1]
+                target["cost_usdc"] = round(target["cost_usdc"] + pos["cost_usdc"], 6)
+                target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos["xlm_to_sell"], 7)
+                target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pos["pending_xlm_gain"], 7)
+            else:
+                cleaned.append(pos)
 
         state["open_positions"] = cleaned
         return state
@@ -113,30 +113,27 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
         return
 
     try:
-        open_offers = (
-            srv.offers()
-            .for_account(pub_key)
-            .limit(50)
-            .call()
-            .get("_embedded", {})
-            .get("records", [])
-        )
-
         active_sells = []
-        for offer in open_offers:
-            selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
-            buying_is_usdc = (
-                offer.get("buying", {}).get("asset_code") == "USDC"
-                and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
-            )
-            if selling_is_xlm and buying_is_usdc:
-                active_sells.append(
-                    {
-                        "offer_id": str(offer["id"]),
-                        "price": float(offer["price"]),
-                        "used": False,
-                    }
+        offers_call = srv.offers().for_account(pub_key).limit(50)
+        while True:
+            res = offers_call.call().get("_embedded", {}).get("records", [])
+            if not res:
+                break
+            for offer in res:
+                selling_is_xlm = offer.get("selling", {}).get("asset_type") == "native"
+                buying_is_usdc = (
+                    offer.get("buying", {}).get("asset_code") == "USDC"
+                    and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
                 )
+                if selling_is_xlm and buying_is_usdc:
+                    active_sells.append(
+                        {
+                            "offer_id": str(offer["id"]),
+                            "price": float(offer["price"]),
+                            "used": False,
+                        }
+                    )
+            offers_call = srv.offers().for_account(pub_key).limit(50).cursor(res[-1]["paging_token"])
 
         remaining_positions = []
         for pos in state["open_positions"]:
@@ -147,14 +144,9 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
                     match["used"] = True
                     remaining_positions.append(pos)
                 else:
-                    gain = pos.get("pending_xlm_gain", 0.0)
-                    state["total_xlm_accumulated"] = round(
-                        state.get("total_xlm_accumulated", 0.0) + gain, 7
-                    )
-                    print(
-                        f"RECONCILED FILLED OFFER: Offer {pos_offer_id} (Trade {pos['trade_id']}) "
-                        f"filled on-chain. Realized +{gain:.7f} XLM gain."
-                    )
+                    # Offer no longer exists on-chain; clear ID so it can re-stage
+                    pos["sell_offer_id"] = None
+                    remaining_positions.append(pos)
             else:
                 remaining_positions.append(pos)
 
@@ -287,11 +279,11 @@ def reconcile_executed_trades(builder, state):
 
                     # Find latest unmapped position to safely absorb dust
                     unmapped_positions = [p for p in state["open_positions"] if not p.get("sell_offer_id")]
-if usdc_paid < 0.10 and unmapped_positions:
-    target = unmapped_positions[-1]
-    target["cost_usdc"] = round(target["cost_usdc"] + usdc_paid, 6)
-    target["xlm_to_sell"] = round(target["xlm_to_sell"] + xlm_to_sell, 7)
-    target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pending_xlm_gain, 7)
+                    if usdc_paid < 0.10 and unmapped_positions:
+                        target = unmapped_positions[-1]
+                        target["cost_usdc"] = round(target["cost_usdc"] + usdc_paid, 6)
+                        target["xlm_to_sell"] = round(target["xlm_to_sell"] + xlm_to_sell, 7)
+                        target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pending_xlm_gain, 7)
                         print(f"DUST MERGED: Added ${usdc_paid:.4f} fill to active position {target['trade_id']}")
                     else:
                         state["open_positions"].append({
@@ -385,24 +377,15 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             effective_usdc = usable_usdc + usdc_locked_in_offer
 
             if effective_usdc >= tranche_size_usdc:
-                print(f"Trailing Buy: Clearing Buy Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
-                
-                price_obj = Price(
-                    int(active_buy_offer["price_r"]["n"]), 
-                    int(active_buy_offer["price_r"]["d"])
-                )
-                
-                builder.append_manage_buy_offer_op(
-                    selling=USDC, buying=XLM, amount="0", price=price_obj, offer_id=offer_id
-                )
-                
+                print(f"Trailing Buy: Repositioning Offer ID {offer_id} to ${target_buy_price:.4f}")
                 xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
+                
                 builder.append_manage_buy_offer_op(
                     selling=USDC,
                     buying=XLM,
                     amount=f"{xlm_to_buy:.7f}",
                     price=f"{target_buy_price:.6f}",
-                    offer_id=0,
+                    offer_id=offer_id,
                 )
                 # Replacing an existing offer net-changes 0 subentries
                 return True, False
