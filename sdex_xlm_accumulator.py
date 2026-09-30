@@ -31,10 +31,23 @@ MIN_SELL_USDC = 0.50        # Minimum $0.50 fill before staging sell offer
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                pass
+            state = json.load(f)
+
+        # Self-cleaning: Consolidate any pre-existing unmapped dust (< $0.10)
+        positions = state.get("open_positions", [])
+        cleaned = []
+        for pos in positions:
+            if pos.get("cost_usdc", 0) < 0.10 and not pos.get("sell_offer_id") and cleaned:
+                target = cleaned[-1]
+                target["cost_usdc"] = round(target["cost_usdc"] + pos["cost_usdc"], 6)
+                target["xlm_to_sell"] = round(target["xlm_to_sell"] + pos["xlm_to_sell"], 7)
+                target["pending_xlm_gain"] = round(target["pending_xlm_gain"] + pos["pending_xlm_gain"], 7)
+            else:
+                cleaned.append(pos)
+
+        state["open_positions"] = cleaned
+        return state
+
     return {
         "open_positions": [],
         "last_trade_cursor": None,
