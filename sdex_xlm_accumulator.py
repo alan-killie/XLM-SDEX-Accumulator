@@ -94,10 +94,10 @@ def find_matching_position(open_positions, trade):
     return 0, "fifo"
 
 
-def sync_sell_offer_ids(state, pub_key, srv):
+def sync_and_stage_sell_offers(builder, state, pub_key, srv):
     """
-    Scans active on-chain sell offers and attaches offer_id
-    to matching open_positions records lacking one.
+    1. Maps active on-chain sell offer IDs to open positions without duplicate assignments.
+    2. Stages on-chain sell offers for any open position missing one.
     """
     if not state.get("open_positions"):
         return
@@ -120,30 +120,50 @@ def sync_sell_offer_ids(state, pub_key, srv):
                 and offer.get("buying", {}).get("asset_issuer") == USDC_ISSUER
             )
             if selling_is_xlm and buying_is_usdc:
-                # Horizon price for selling XLM -> USDC is already in USDC/XLM
                 active_sells.append(
                     {
                         "offer_id": str(offer["id"]),
                         "price": float(offer["price"]),
+                        "used": False,
                     }
                 )
 
+        # 1. Map existing on-chain offer IDs uniquely (preventing duplicate bindings)
         for pos in state["open_positions"]:
             if not pos.get("sell_offer_id"):
                 target = pos.get("target_sell_price", 0.0)
                 for offer in active_sells:
-                    if abs(offer["price"] - target) / target < 0.001:
+                    if not offer["used"] and abs(offer["price"] - target) / target < 0.001:
                         pos["sell_offer_id"] = offer["offer_id"]
+                        offer["used"] = True
                         print(f"Mapped Sell Offer ID {offer['offer_id']} to target ${target:.6f}")
                         break
+
+        # 2. Stage on-chain offers for any positions still missing one
+        staged_count = 0
+        for pos in state["open_positions"]:
+            if not pos.get("sell_offer_id") and pos.get("cost_usdc", 0) >= MIN_SELL_USDC:
+                if staged_count < 2:
+                    builder.append_manage_sell_offer_op(
+                        selling=XLM,
+                        buying=USDC,
+                        amount=f"{pos['xlm_to_sell']:.7f}",
+                        price=f"{pos['target_sell_price']:.6f}",
+                        offer_id=0,
+                    )
+                    staged_count += 1
+                    print(
+                        f"SELL OFFER STAGED: {pos['xlm_to_sell']:.4f} XLM @ ${pos['target_sell_price']:.4f}"
+                    )
+
     except Exception as e:
-        print(f"Notice: Failed to sync sell offer IDs ({e})")
+        print(f"Notice: Failed to sync/stage sell offer IDs ({e})")
 
 
 def reconcile_executed_trades(builder, state):
     """
     Scans new fills using Horizon cursor.
-    - Buy fills: Stages passive sell offers and tracks open positions.
+    - Buy fills: Adds pending position to state.
     - Sell fills: Matches specific positions, supports partial fills, and realizes XLM gains.
     """
     try:
@@ -164,7 +184,6 @@ def reconcile_executed_trades(builder, state):
         )
 
         records = trades_call.call().get("_embedded", {}).get("records", [])
-        staged_sell_count = 0
 
         for trade in records:
             state["last_trade_cursor"] = trade["paging_token"]
@@ -192,7 +211,7 @@ def reconcile_executed_trades(builder, state):
             sold_via_counter = counter_is_xlm and ((is_base and not base_is_seller) or (is_counter and base_is_seller))
 
             # --------------------------------------------------
-            # 1. HANDLE BUY FILL (Stage Sell Offer + Track Pending Position)
+            # 1. HANDLE BUY FILL (Track Pending Position)
             # --------------------------------------------------
             if bought_via_base or bought_via_counter:
                 if base_is_xlm:
@@ -208,20 +227,6 @@ def reconcile_executed_trades(builder, state):
 
                     xlm_to_sell = round(usdc_paid / target_sell_price, 7)
                     pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
-
-                    if usdc_paid >= MIN_SELL_USDC:
-                        if staged_sell_count < 2:
-                            builder.append_manage_sell_offer_op(
-                                selling=XLM,
-                                buying=USDC,
-                                amount=f"{xlm_to_sell:.7f}",
-                                price=f"{target_sell_price:.6f}",
-                                offer_id=0,
-                            )
-                            staged_sell_count += 1
-                            print(f"SELL OFFER STAGED: {xlm_to_sell:.4f} XLM @ ${target_sell_price:.4f}")
-                        else:
-                            print(f"BATCH LIMIT REACHED: Deferred sell offer for trade {trade['id']} to next cycle.")
 
                     state["open_positions"].append({
                         "trade_id": str(trade["id"]),
@@ -245,10 +250,10 @@ def reconcile_executed_trades(builder, state):
 
                 if xlm_sold > 0 and state["open_positions"]:
                     idx, match_type = find_matching_position(state["open_positions"], trade)
-                    
+
                     if idx is not None:
                         pos = state["open_positions"][idx]
-                        
+
                         fill_ratio = min(1.0, xlm_sold / pos["xlm_to_sell"]) if pos.get("xlm_to_sell", 0) > 0 else 1.0
                         realized_gain = pos.get("pending_xlm_gain", 0.0) * fill_ratio
 
@@ -256,8 +261,8 @@ def reconcile_executed_trades(builder, state):
                             state.get("total_xlm_accumulated", 0.0) + realized_gain, 7
                         )
 
-                        pos["xlm_to_sell"] = round(pos["xlm_to_sell"] - xlm_sold, 7)
-                        pos["pending_xlm_gain"] = round(pos.get("pending_xlm_gain", 0.0) - realized_gain, 7)
+                        pos["xlm_to_sell"] = round(max(0.0, pos["xlm_to_sell"] - xlm_sold), 7)
+                        pos["pending_xlm_gain"] = round(max(0.0, pos.get("pending_xlm_gain", 0.0) - realized_gain), 7)
 
                         print(
                             f"SELL FILL MATCHED ({match_type}): Sold {xlm_sold:.4f} XLM. "
@@ -305,19 +310,16 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
         drift = abs(current_price - (existing_buy_price / DIP_THRESHOLD)) / current_price
 
         if drift >= REPOSITION_DRIFT:
-            # Horizon 'amount' for a USDC-selling offer is already USDC
             usdc_locked_in_offer = float(active_buy_offer["amount"])
             effective_usdc = liquid_usdc + usdc_locked_in_offer
 
             if effective_usdc >= tranche_size_usdc:
                 print(f"Trailing Buy: Clearing Buy Offer ID {offer_id} and resetting bid to ${target_buy_price:.4f}")
                 
-                # Op 1: Cancel old buy offer
                 builder.append_manage_buy_offer_op(
                     selling=USDC, buying=XLM, amount="0", price=active_buy_offer["price"], offer_id=offer_id
                 )
                 
-                # Op 2: Place new buy offer
                 xlm_to_buy = tranche_size_usdc / target_buy_price
                 builder.append_manage_buy_offer_op(
                     selling=USDC,
@@ -356,9 +358,6 @@ def run_accumulator_bot():
     state = load_state()
     state["last_market_price"] = round(price, 6)
 
-    # Sync on-chain sell offer IDs to local state
-    sync_sell_offer_ids(state, public_key, server)
-
     account = server.load_account(public_key)
     account_details = server.accounts().account_id(public_key).call()
 
@@ -370,12 +369,15 @@ def run_accumulator_bot():
 
     action_taken = False
 
-    # 1. Reconcile fills (stage sell orders / realize gains)
+    # 1. Reconcile fills from trade history
     reconcile_executed_trades(builder, state)
+
+    # 2. Sync offer IDs & stage on-chain sell orders for any unplaced positions
+    sync_and_stage_sell_offers(builder, state, public_key, server)
     if len(builder.operations) > 0:
         action_taken = True
 
-    # 2. Calculate liquid USDC balance
+    # 3. Calculate liquid USDC balance
     liquid_usdc = 0.0
     for b in account_details.get("balances", []):
         if b.get("asset_code") == "USDC" and b.get("asset_issuer") == USDC_ISSUER:
@@ -383,19 +385,19 @@ def run_accumulator_bot():
             liabilities = float(b.get("selling_liabilities", 0.0))
             liquid_usdc = max(0.0, total - liabilities)
 
-    # 3. Manage trailing buy offer
+    # 4. Manage trailing buy offer
     if manage_trailing_buy_offer(builder, price, state, liquid_usdc):
         action_taken = True
 
-    # 4. Single atomic submit
+    # 5. Single atomic submit
     if action_taken:
         try:
             tx = builder.set_timeout(180).build()
             tx.sign(kp)
             server.submit_transaction(tx)
             
-            # Post-submit sync to grab newly created sell offer IDs
-            sync_sell_offer_ids(state, public_key, server)
+            # Post-submit sync to map newly created sell offer IDs into state
+            sync_and_stage_sell_offers(builder, state, public_key, server)
             save_state(state)
             print("Transaction submitted and state persisted.")
         except Exception as e:
