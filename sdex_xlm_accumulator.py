@@ -408,12 +408,12 @@ def reconcile_executed_trades(builder, state):
                     usdc_paid = float(trade.get("base_amount", 0))
 
                 if xlm_bought > 0:
-    buy_price = usdc_paid / xlm_bought
-    target_sell_price = round(buy_price * PROFIT_MARGIN, 6)
+                    buy_price = usdc_paid / xlm_bought
+                    target_sell_price = round(buy_price * PROFIT_MARGIN, 6)
 
-    # Force xlm_to_sell to recover EXACTLY usdc_paid (0% USDC profit, 100% XLM yield)
-    xlm_to_sell = round(usdc_paid / target_sell_price, 7)
-    pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
+                    # Force xlm_to_sell to recover EXACTLY usdc_paid (0% USDC profit, 100% XLM yield)
+                    xlm_to_sell = round(usdc_paid / target_sell_price, 7)
+                    pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
 
 
                     unmapped_positions = [
