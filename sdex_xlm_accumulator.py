@@ -697,6 +697,12 @@ def run_accumulator_bot():
 
     sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
 
+        # Append valuation check at the end of the run
+    log_portfolio_valuation(price, liquid_usdc, native_balance, state)
+
+    if action_taken:
+        # ... transaction submission logic ...
+
     if len(builder.operations) > 0:
         try:
             tx = builder.set_timeout(180).build()
