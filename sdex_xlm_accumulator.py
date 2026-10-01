@@ -620,6 +620,35 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     return False, False
 
 
+def log_portfolio_valuation(price, liquid_usdc, native_balance, state):
+    """Calculates and logs total liquid + grid portfolio value in USDC and XLM."""
+    open_positions = state.get("open_positions", [])
+    
+    # Cost basis of open grid positions
+    grid_usdc_locked = sum(p.get("cost_usdc", 0.0) for p in open_positions)
+    # Total XLM held inside open grid positions (recovery + unrealized yield)
+    grid_xlm_held = sum(
+        p.get("xlm_to_sell", 0.0) + p.get("pending_xlm_gain", 0.0)
+        for p in open_positions
+    )
+    
+    accumulated_xlm = state.get("total_xlm_accumulated", 0.0)
+    
+    # Portfolio totals
+    total_usdc = liquid_usdc + grid_usdc_locked
+    total_xlm = native_balance + accumulated_xlm
+    total_portfolio_usdc = total_usdc + (total_xlm * price)
+    
+    print("=" * 50)
+    print(f"PORTFOLIO VALUATION (@ XLM/USDC ${price:.6f})")
+    print(f" Liquid USDC:            ${liquid_usdc:.2f}")
+    print(f" Locked Grid Capital:    ${grid_usdc_locked:.2f} ({len(open_positions)} open positions)")
+    print(f" Realized XLM Yield:     +{accumulated_xlm:.7f} XLM")
+    print(f" Total XLM Balance:      {total_xlm:.4f} XLM")
+    print(f" Total Net Worth:        ${total_portfolio_usdc:.2f} USDC")
+    print("=" * 50)
+
+
 def run_accumulator_bot():
     price = get_mid_price()
     if not price:
