@@ -32,6 +32,7 @@ MAX_NEW_SELLS_PER_CYCLE = 2     # new consolidated offers staged per cycle
 XLM_FLOOR = 0.55                # XLM kept back from staging
 SUBENTRY_RESERVE = 0.50         # reserve consumed/released per offer
 
+
 def merge_into_position(target, pos_to_add):
     """Merges pos_to_add into target using a cost-weighted target sell price."""
     total_cost = target["cost_usdc"] + pos_to_add["cost_usdc"]
@@ -66,7 +67,6 @@ def merge_into_position(target, pos_to_add):
     # Recalculate average effective buy price
     if total_xlm > 0:
         target["buy_price"] = round(target["cost_usdc"] / total_xlm, 6)
-
 
 
 def load_state():
@@ -200,7 +200,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
     if not state.get("open_positions"):
         return
 
-    # Phase 0: read-only fetch. If Horizon fails, nothing has been mutated.
     try:
         active_sells = fetch_active_sell_offers(srv, pub_key)
     except Exception as e:
@@ -210,8 +209,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
     positions = state["open_positions"]
     offers_by_id = {o["offer_id"]: o for o in active_sells}
 
-    # Phase 1: validate existing mappings at the GROUP level.
-    # All positions sharing a sell_offer_id must sum to the on-chain amount.
     mapped_groups = {}
     for pos in positions:
         if pos.get("sell_offer_id"):
@@ -221,15 +218,11 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
         offer = offers_by_id.get(offer_id)
         group_xlm = sum(p.get("xlm_to_sell", 0.0) for p in group)
         if offer and abs(group_xlm - offer["amount"]) < SELL_AMOUNT_TOL:
-            offer["used"] = True  # healthy: leave untouched
+            offer["used"] = True
         else:
-            # Offer gone or amount drifted. Unmap only; profit accounting
-            # stays exclusively in reconcile_executed_trades().
             for pos in group:
                 pos["sell_offer_id"] = None
 
-    # Phase 2: adopt unclaimed on-chain offers. Match a price group whose
-    # leading positions (state order) sum to the offer amount.
     for offer in active_sells:
         if offer["used"] or offer["price"] <= 0:
             continue
@@ -253,8 +246,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             if offer["used"]:
                 break
 
-    # Phase 3: cancel what is still unclaimed, and credit the released XLM
-    # and subentry reserve so restaging can happen in the same transaction.
     available_xlm_to_sell = liquid_xlm
     for offer in active_sells:
         if offer["used"]:
@@ -272,8 +263,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
             f" ({offer['amount']:.4f} XLM released)"
         )
 
-    # Phase 4: stage consolidated offers from unmapped positions.
-    # Whole positions only, so every staged offer stays mappable next cycle.
     staged_count = 0
     for target_price, group in sorted(group_unmapped_positions(positions).items()):
         if (
@@ -297,7 +286,6 @@ def sync_and_stage_sell_offers(builder, state, pub_key, srv, liquid_xlm):
         if not batch:
             continue
 
-        # Wait for dust to accumulate unless these are the only positions left
         if batch_cost < MIN_SELL_USDC and len(positions) > len(batch):
             continue
         if batch_xlm * target_price < MIN_SELL_USDC:
@@ -411,7 +399,6 @@ def reconcile_executed_trades(builder, state):
                     buy_price = usdc_paid / xlm_bought
                     target_sell_price = round(buy_price * PROFIT_MARGIN, 6)
 
-                    # Force xlm_to_sell to recover EXACTLY usdc_paid (0% USDC profit, 100% XLM yield)
                     xlm_to_sell = round(usdc_paid / target_sell_price, 7)
                     pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
 
@@ -420,7 +407,7 @@ def reconcile_executed_trades(builder, state):
                         for p in state["open_positions"]
                         if not p.get("sell_offer_id")
                     ]
-                    
+
                     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
                     if usdc_paid < (tranche_size_usdc * 0.95) and unmapped_positions:
                         pos_to_add = {
@@ -432,7 +419,7 @@ def reconcile_executed_trades(builder, state):
                         merge_into_position(unmapped_positions[-1], pos_to_add)
                         print(
                             f"PARTIAL FILL MERGED: Added ${usdc_paid:.4f} fill to active"
-                            f" position {unmapped_positions[-1]['trade_id']}"
+                            f" position {unmapped_positions[-1].get('trade_id', 'unmapped')}"
                         )
                     else:
                         state["open_positions"].append(
@@ -492,14 +479,14 @@ def reconcile_executed_trades(builder, state):
 
                     print(
                         f"SELL FILL MATCHED ({match_type}): Applied"
-                        f" {portion:.4f} XLM to trade {pos['trade_id']}. "
+                        f" {portion:.4f} XLM to trade {pos.get('trade_id', 'group')}. "
                         f"Realized +{realized_gain:.7f} XLM gain."
                     )
 
                     if pos["xlm_to_sell"] <= 0.0001:
                         state["open_positions"].pop(idx)
                         print(
-                            f"POSITION FULLY CLOSED: Removed {pos['trade_id']}"
+                            f"POSITION FULLY CLOSED: Removed {pos.get('trade_id', 'group')}"
                             " from grid state."
                         )
 
@@ -507,14 +494,14 @@ def reconcile_executed_trades(builder, state):
         print(f"Notice: Trade reconciliation check failed ({e})")
 
 
-def get_recent_high_low_close(server, resolution_ms=300000, limit=3):
+def get_recent_high_low_close(srv, resolution_ms=300000, limit=3):
     """
     Fetches recent 5-min candles (limit=3 -> 15 min window) from Horizon trade aggregations.
     Returns (max_high, min_low, latest_close) or (None, None, None) on failure.
     """
     try:
         aggregations = (
-            server.trade_aggregations(
+            srv.trade_aggregations(
                 base=XLM,
                 counter=USDC,
                 resolution=resolution_ms,
@@ -538,7 +525,6 @@ def get_recent_high_low_close(server, resolution_ms=300000, limit=3):
 
 
 def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
-    # Fetch recent 15-minute range to smooth out single-tick outliers
     high, low, close = get_recent_high_low_close(server)
 
     if high and low and close:
@@ -652,8 +638,6 @@ def run_accumulator_bot():
         base_fee=100,
     )
 
-    action_taken = False
-
     reconcile_executed_trades(builder, state)
 
     liquid_usdc = 0.0
@@ -679,16 +663,12 @@ def run_accumulator_bot():
     buy_action, created_new_subentry = manage_trailing_buy_offer(
         builder, price, state, liquid_usdc
     )
-    if buy_action:
-        action_taken = True
-        if created_new_subentry:
-            liquid_xlm = max(0.0, liquid_xlm - 0.50)
+    if created_new_subentry:
+        liquid_xlm = max(0.0, liquid_xlm - 0.50)
 
     sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
-    if len(builder.operations) > (1 if buy_action else 0):
-        action_taken = True
 
-    if action_taken:
+    if len(builder.operations) > 0:
         try:
             tx = builder.set_timeout(180).build()
             tx.sign(kp)
