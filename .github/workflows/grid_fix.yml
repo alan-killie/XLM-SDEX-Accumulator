@@ -3,6 +3,9 @@ name: Run State Fix
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   fix-state:
     runs-on: ubuntu-latest
