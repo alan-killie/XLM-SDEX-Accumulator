@@ -139,9 +139,19 @@
       "target_sell_price": 0.220386,
       "created_at": "2026-10-01T14:01:52Z",
       "sell_offer_id": "1859854696"
+    },
+    {
+      "trade_id": "277953356931682305-0",
+      "buy_price": 0.218488,
+      "cost_usdc": 0.99,
+      "xlm_to_sell": 4.5086073,
+      "pending_xlm_gain": 0.0225339,
+      "target_sell_price": 0.21958,
+      "created_at": "2026-10-01T14:47:57Z",
+      "sell_offer_id": null
     }
   ],
-  "last_trade_cursor": "277950981814697985-0",
+  "last_trade_cursor": "277953356931682305-0",
   "total_xlm_accumulated": 0.0,
-  "last_market_price": 0.219224
+  "last_market_price": 0.218458
 }
