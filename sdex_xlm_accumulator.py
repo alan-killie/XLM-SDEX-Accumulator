@@ -703,7 +703,7 @@ def run_accumulator_bot():
     def log_portfolio_valuation(price, liquid_usdc, native_balance, state):
     """Calculates true account net worth without double-counting grid inventory."""
     open_positions = state.get("open_positions", [])
-    
+
     # Total cost basis locked in open positions
     grid_usdc_cost = sum(p.get("cost_usdc", 0.0) for p in open_positions)
     accumulated_xlm = state.get("total_xlm_accumulated", 0.0)
@@ -715,12 +715,70 @@ def run_accumulator_bot():
     print("=" * 55)
     print(f"PORTFOLIO VALUATION (@ XLM/USDC ${price:.6f})")
     print(f" Liquid USDC:            ${liquid_usdc:.2f}")
-    print(f" Grid USDC Cost Basis:   ${grid_usdc_cost:.2f} ({len(open_positions)} open positions)")
-    print(f" XLM Balance:            {native_balance:.4f} XLM (${xlm_market_value:.2f})")
+    print(
+        f" Grid USDC Cost Basis:   ${grid_usdc_cost:.2f} ({len(open_positions)}"
+        " open positions)"
+    )
+    print(
+        f" XLM Balance:            {native_balance:.4f} XLM"
+        f" (${xlm_market_value:.2f})"
+    )
     print(f" Realized XLM Yield:     +{accumulated_xlm:.7f} XLM")
     print("-" * 55)
     print(f" TRUE NET WORTH:         ${total_net_worth_usdc:.2f} USDC")
     print("=" * 55)
+
+
+def run_accumulator_bot():
+    price = get_mid_price()
+    if not price:
+        print("Market data unavailable. Aborting cycle.")
+        return
+
+    state = load_state()
+    state["last_market_price"] = round(price, 6)
+
+    account = server.load_account(public_key)
+    account_details = server.accounts().account_id(public_key).call()
+
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=Network.PUBLIC_NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+
+    reconcile_executed_trades(builder, state)
+
+    liquid_usdc = 0.0
+    native_balance = 0.0
+    native_liabilities = 0.0
+
+    for b in account_details.get("balances", []):
+        if (
+            b.get("asset_code") == "USDC"
+            and b.get("asset_issuer") == USDC_ISSUER
+        ):
+            total = float(b["balance"])
+            liabilities = float(b.get("selling_liabilities", 0.0))
+            liquid_usdc = max(0.0, total - liabilities)
+        elif b.get("asset_type") == "native":
+            native_balance = float(b["balance"])
+            native_liabilities = float(b.get("selling_liabilities", 0.0))
+
+    subentry_count = account_details.get("subentry_count", 0)
+    base_reserve = ((2 + subentry_count) * 0.5) + 0.1
+    liquid_xlm = max(0.0, native_balance - native_liabilities - base_reserve)
+
+    buy_action, created_new_subentry = manage_trailing_buy_offer(
+        builder, price, state, liquid_usdc
+    )
+    if created_new_subentry:
+        liquid_xlm = max(0.0, liquid_xlm - 0.50)
+
+    sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
+
+    # Log true portfolio valuation before submission
+    log_portfolio_valuation(price, liquid_usdc, native_balance, state)
 
     if len(builder.operations) > 0:
         try:
