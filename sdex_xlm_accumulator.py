@@ -697,11 +697,10 @@ def run_accumulator_bot():
 
     sync_and_stage_sell_offers(builder, state, public_key, server, liquid_xlm)
 
-        # Append valuation check at the end of the run
+    # ---------------------------------------------------------
+    # PORTFOLIO VALUATION LOG
+    # ---------------------------------------------------------
     log_portfolio_valuation(price, liquid_usdc, native_balance, state)
-
-    if action_taken:
-        # ... transaction submission logic ...
 
     if len(builder.operations) > 0:
         try:
@@ -730,3 +729,4 @@ def run_accumulator_bot():
 
 if __name__ == "__main__":
     run_accumulator_bot()
+
