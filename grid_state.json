@@ -221,8 +221,8 @@
       "sell_offer_id": null
     }
   ],
-  "last_trade_cursor": "277965975545348097-1",
-  "total_xlm_accumulated": 0.0,
-  "last_market_price": 0.220015,
+  "last_trade_cursor": "277966426517340162-0",
+  "total_xlm_accumulated": 0.0224513,
+  "last_market_price": 0.220753,
   "yield_history": []
 }
