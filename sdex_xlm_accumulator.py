@@ -700,7 +700,7 @@ def run_accumulator_bot():
     # ---------------------------------------------------------
     # PORTFOLIO VALUATION LOG
     # ---------------------------------------------------------
-    def log_portfolio_valuation(price, liquid_usdc, native_balance, state):
+def log_portfolio_valuation(price, liquid_usdc, native_balance, state):
     """Calculates true account net worth without double-counting grid inventory."""
     open_positions = state.get("open_positions", [])
 
