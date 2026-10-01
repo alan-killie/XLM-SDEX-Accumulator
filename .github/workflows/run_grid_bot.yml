@@ -1,8 +1,8 @@
 name: Run Grid Bot
 
 on:
-#Schedule:
-#    - cron: '*/5 * * * *'  # Runs every 5 minutes (if using scheduled triggers)
+  #Schedule:
+  #    - cron: '*/5 * * * *'  # Runs every 5 minutes (if using scheduled triggers)
   workflow_dispatch:      # Enables manual trigger button in GitHub UI
 
 jobs:
@@ -21,7 +21,55 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Consolidate Unmapped Positions
+        run: |
+          python -c '
+          import json
+
+          def consolidate_unmapped_positions(state):
+              unmapped = [p for p in state["open_positions"] if not p.get("sell_offer_id")]
+              if len(unmapped) <= 1:
+                  print("No unmapped backlog to consolidate.")
+                  return
+
+              grouped = {}
+              for pos in unmapped:
+                  price_key = round(pos["target_sell_price"], 6)
+                  grouped.setdefault(price_key, []).append(pos)
+
+              new_open_positions = [p for p in state["open_positions"] if p.get("sell_offer_id")]
+
+              for price, group in grouped.items():
+                  base_pos = group[0]
+                  for addon in group[1:]:
+                      base_pos["cost_usdc"] = round(base_pos.get("cost_usdc", 0.0) + addon.get("cost_usdc", 0.0), 6)
+                      base_pos["xlm_to_sell"] = round(base_pos.get("xlm_to_sell", 0.0) + addon.get("xlm_to_sell", 0.0), 7)
+                      base_pos["pending_xlm_gain"] = round(base_pos.get("pending_xlm_gain", 0.0) + addon.get("pending_xlm_gain", 0.0), 7)
+                  new_open_positions.append(base_pos)
+
+              state["open_positions"] = new_open_positions
+              print(f"Consolidated unmapped positions down to {len(grouped)} entry/entries.")
+
+          try:
+              with open("grid_state.json", "r") as f:
+                  state = json.load(f)
+
+              consolidate_unmapped_positions(state)
+
+              with open("grid_state.json", "w") as f:
+                  json.dump(state, f, indent=2)
+          except Exception as e:
+              print(f"Consolidation skipped: {e}")
+          '
+
       - name: Run script
         env:
           STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
-        run: grid_bot.py
+        run: python grid_bot.py
+
+      - name: Commit state changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add grid_state.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-consolidate unmapped grid positions [skip ci]" && git push)
