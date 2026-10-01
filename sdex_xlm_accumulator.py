@@ -38,7 +38,15 @@ def merge_into_position(target, pos_to_add):
     if total_cost <= 0:
         return
 
-    # Cost-weighted average target price
+    # Total combined XLM held across both positions prior to recalculation
+    total_xlm = (
+        target.get("xlm_to_sell", 0.0)
+        + target.get("pending_xlm_gain", 0.0)
+        + pos_to_add.get("xlm_to_sell", 0.0)
+        + pos_to_add.get("pending_xlm_gain", 0.0)
+    )
+
+    # Cost-weighted average target sell price
     weighted_target = (
         (target["cost_usdc"] * target["target_sell_price"])
         + (pos_to_add["cost_usdc"] * pos_to_add["target_sell_price"])
@@ -46,19 +54,19 @@ def merge_into_position(target, pos_to_add):
 
     target["cost_usdc"] = round(total_cost, 6)
     target["target_sell_price"] = round(weighted_target, 6)
-    target["xlm_to_sell"] = round(
-        target["xlm_to_sell"] + pos_to_add["xlm_to_sell"], 7
-    )
+
+    # Recalculate xlm_to_sell to recover ONLY total_cost (0% USDC profit)
+    target["xlm_to_sell"] = round(total_cost / target["target_sell_price"], 7)
+
+    # All remaining XLM is skimmed strictly as accumulated XLM gain
     target["pending_xlm_gain"] = round(
-        target.get("pending_xlm_gain", 0.0)
-        + pos_to_add.get("pending_xlm_gain", 0.0),
-        7,
+        max(0.0, total_xlm - target["xlm_to_sell"]), 7
     )
 
     # Recalculate average effective buy price
-    total_xlm = target["xlm_to_sell"] + target["pending_xlm_gain"]
     if total_xlm > 0:
         target["buy_price"] = round(target["cost_usdc"] / total_xlm, 6)
+
 
 
 def load_state():
