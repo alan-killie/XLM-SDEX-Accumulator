@@ -22,8 +22,8 @@ STATE_FILE = "grid_state.json"
 
 TOTAL_CAPITAL_USDC = 10.0  # Total USDC working capital
 NUM_TIERS = 10  # 10 tranches ($1.00 USDC per trade)
-PROFIT_MARGIN = 1.010  # +1.0% profit target
-DIP_THRESHOLD = 0.997  # -0.3% buy trigger below mid-price
+PROFIT_MARGIN = 1.005  # +0.5% profit target
+DIP_THRESHOLD = 0.995  # -0.5% buy trigger below mid-price
 REPOSITION_DRIFT = 0.0020  # Reposition if mid-price drifts >0.20%
 MIN_SELL_USDC = 0.50  # Minimum $0.50 fill before staging sell offer
 SELL_AMOUNT_TOL = 0.01          # XLM tolerance when matching offer <-> positions
