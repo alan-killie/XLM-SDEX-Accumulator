@@ -415,13 +415,14 @@ def reconcile_executed_trades(builder, state):
                     xlm_to_sell = round(usdc_paid / target_sell_price, 7)
                     pending_xlm_gain = round(xlm_bought - xlm_to_sell, 7)
 
-
                     unmapped_positions = [
                         p
                         for p in state["open_positions"]
                         if not p.get("sell_offer_id")
                     ]
-                    if usdc_paid < 0.10 and unmapped_positions:
+                    
+                    tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
+                    if usdc_paid < (tranche_size_usdc * 0.95) and unmapped_positions:
                         pos_to_add = {
                             "cost_usdc": usdc_paid,
                             "target_sell_price": target_sell_price,
@@ -430,7 +431,7 @@ def reconcile_executed_trades(builder, state):
                         }
                         merge_into_position(unmapped_positions[-1], pos_to_add)
                         print(
-                            f"DUST MERGED: Added ${usdc_paid:.4f} fill to active"
+                            f"PARTIAL FILL MERGED: Added ${usdc_paid:.4f} fill to active"
                             f" position {unmapped_positions[-1]['trade_id']}"
                         )
                     else:
