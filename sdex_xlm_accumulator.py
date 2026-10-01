@@ -518,8 +518,8 @@ def get_recent_high_low_close(server, resolution_ms=300000, limit=3):
                 base=XLM,
                 counter=USDC,
                 resolution=resolution_ms,
-                limit=limit,
             )
+            .limit(limit)
             .order(desc=True)
             .call()
             .get("_embedded", {})
