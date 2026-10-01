@@ -88,12 +88,14 @@ def load_state():
                 cleaned.append(pos)
 
         state["open_positions"] = cleaned
+        state.setdefault("yield_history", [])
         return state
 
     return {
         "open_positions": [],
         "last_trade_cursor": None,
         "total_xlm_accumulated": 0.0,
+        "yield_history": [],
         "last_market_price": None,
     }
 
