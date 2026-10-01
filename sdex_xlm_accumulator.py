@@ -623,33 +623,43 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
 
 
 def log_portfolio_valuation(price, liquid_usdc, native_balance, state):
-    """Calculates and logs total liquid + grid portfolio value in USDC and XLM."""
     open_positions = state.get("open_positions", [])
-    
-    # Cost basis of open grid positions
-    grid_usdc_locked = sum(p.get("cost_usdc", 0.0) for p in open_positions)
-    # Total XLM held inside open grid positions (recovery + unrealized yield)
-    grid_xlm_held = sum(
-        p.get("xlm_to_sell", 0.0) + p.get("pending_xlm_gain", 0.0)
-        for p in open_positions
-    )
-    
-    accumulated_xlm = state.get("total_xlm_accumulated", 0.0)
-    
-    # Portfolio totals
-    total_usdc = liquid_usdc + grid_usdc_locked
-    total_xlm = native_balance + accumulated_xlm
-    total_portfolio_usdc = total_usdc + (total_xlm * price)
-    
-    print("=" * 50)
+
+    grid_usdc_cost = sum(p.get("cost_usdc", 0.0) for p in open_positions)
+    realized_xlm = state.get("total_xlm_accumulated", 0.0)
+    pending_xlm = sum(p.get("pending_xlm_gain", 0.0) for p in open_positions)
+    pending_usdc_val = pending_xlm * price
+
+    xlm_market_value = native_balance * price
+    total_net_worth_usdc = liquid_usdc + xlm_market_value
+
+    yield_history = state.get("yield_history", [])
+    last_yield = yield_history[-1] if yield_history else None
+
+    print("=" * 55)
     print(f"PORTFOLIO VALUATION (@ XLM/USDC ${price:.6f})")
     print(f" Liquid USDC:            ${liquid_usdc:.2f}")
-    print(f" Locked Grid Capital:    ${grid_usdc_locked:.2f} ({len(open_positions)} open positions)")
-    print(f" Realized XLM Yield:     +{accumulated_xlm:.7f} XLM")
-    print(f" Total XLM Balance:      {total_xlm:.4f} XLM")
-    print(f" Total Net Worth:        ${total_portfolio_usdc:.2f} USDC")
-    print("=" * 50)
-
+    print(
+        f" Grid USDC Cost Basis:   ${grid_usdc_cost:.2f} ({len(open_positions)}"
+        " open positions)"
+    )
+    print(
+        f" XLM Balance:            {native_balance:.4f} XLM"
+        f" (${xlm_market_value:.2f})"
+    )
+    print(f" Realized XLM Yield:     +{realized_xlm:.7f} XLM")
+    if last_yield:
+        print(
+            f"   └─ Last Accumulated:  +{last_yield['amount_xlm']:.7f} XLM at"
+            f" {last_yield['timestamp']}"
+        )
+    print(
+        f" Pending XLM Yield:      +{pending_xlm:.7f} XLM"
+        f" (${pending_usdc_val:.4f})"
+    )
+    print("-" * 55)
+    print(f" TRUE NET WORTH:         ${total_net_worth_usdc:.2f} USDC")
+    print("=" * 55)
 
 def run_accumulator_bot():
     price = get_mid_price()
