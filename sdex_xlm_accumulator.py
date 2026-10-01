@@ -147,10 +147,10 @@ def find_matching_position(open_positions, trade):
     if trade_price > 0:
         for idx, pos in enumerate(open_positions):
             target = pos.get("target_sell_price", 0.0)
-            if target > 0 and abs(target - trade_price) / target < 0.001:
+            if target > 0 and abs(target - trade_price) / target < 0.005:
                 return idx, "price"
 
-    return None, None
+    return 0, "fifo_fallback"
 
 
 def fetch_active_sell_offers(srv, pub_key):
