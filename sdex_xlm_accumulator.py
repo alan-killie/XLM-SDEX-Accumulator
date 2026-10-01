@@ -507,14 +507,49 @@ def reconcile_executed_trades(builder, state):
         print(f"Notice: Trade reconciliation check failed ({e})")
 
 
+def get_recent_high_low_close(server, resolution_ms=300000, limit=3):
+    """
+    Fetches recent 5-min candles (limit=3 -> 15 min window) from Horizon trade aggregations.
+    Returns (max_high, min_low, latest_close) or (None, None, None) on failure.
+    """
+    try:
+        aggregations = (
+            server.trade_aggregations(
+                base=XLM,
+                counter=USDC,
+                resolution=resolution_ms,
+                limit=limit,
+            )
+            .order(desc=True)
+            .call()
+            .get("_embedded", {})
+            .get("records", [])
+        )
+
+        if aggregations:
+            highs = [float(c["high"]) for c in aggregations]
+            lows = [float(c["low"]) for c in aggregations]
+            latest_close = float(aggregations[0]["close"])
+            return max(highs), min(lows), latest_close
+    except Exception as e:
+        print(f"Warning: Could not fetch trade aggregations ({e}). Falling back to spot price.")
+
+    return None, None, None
+
+
 def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
-    target_buy_price = round(current_price * DIP_THRESHOLD, 6)
+    # Fetch recent 15-minute range to smooth out single-tick outliers
+    high, low, close = get_recent_high_low_close(server)
+
+    if high and low and close:
+        baseline_price = (high + low + close) / 3.0
+    else:
+        baseline_price = current_price
+
+    target_buy_price = round(baseline_price * DIP_THRESHOLD, 6)
     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
 
-    # Keep 0.02 USDC liquid buffer for fee margin / precision rounding
     usable_usdc = max(0.0, liquid_usdc - 0.02)
-    
-    # Derive actual deployed capital from wallet balance to bypass phantom state entries
     real_deployed_usdc = TOTAL_CAPITAL_USDC - usable_usdc
 
     open_offers = (
@@ -558,7 +593,7 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             if effective_usdc >= tranche_size_usdc:
                 print(
                     f"Trailing Buy: Repositioning Offer ID {offer_id} to"
-                    f" ${target_buy_price:.4f}"
+                    f" ${target_buy_price:.4f} (Baseline: ${baseline_price:.4f})"
                 )
                 xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
 
@@ -576,12 +611,11 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                     " buy offer."
                 )
     else:
-        # Check against true capital ceiling AND available liquid USDC
         if real_deployed_usdc < TOTAL_CAPITAL_USDC and usable_usdc >= tranche_size_usdc:
             xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
             print(
                 f"Trailing Buy: Placing new bid for {xlm_to_buy:.4f} XLM @"
-                f" ${target_buy_price:.4f}"
+                f" ${target_buy_price:.4f} (Baseline: ${baseline_price:.4f})"
             )
             builder.append_manage_buy_offer_op(
                 selling=USDC,
