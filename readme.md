@@ -1,6 +1,8 @@
 # SDEX XLM Accumulator Bot
 
-> **⚠️ WARNING: EXPERIMENTAL SOFTWARE**  
+> **⚠️ WARNING: EXPERIMENTAL SOFTWARE**
+> Expect breakages.
+> Better chance of forking and fixing yourself than waiting for a fix here.
 > This project is experimental software designed for automated trading on the Stellar Decentralized Exchange (SDEX). Use at your own risk. Always test thoroughly with testnet or minimal capital before operating with live funds. note: Don't use the populated grid_state.json as this records my live trades on my public key. The script will generate one for you. 
 
 ## Overview
