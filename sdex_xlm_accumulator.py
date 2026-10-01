@@ -511,7 +511,11 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
     target_buy_price = round(current_price * DIP_THRESHOLD, 6)
     tranche_size_usdc = TOTAL_CAPITAL_USDC / NUM_TIERS
 
+    # Keep 0.02 USDC liquid buffer for fee margin / precision rounding
     usable_usdc = max(0.0, liquid_usdc - 0.02)
+    
+    # Derive actual deployed capital from wallet balance to bypass phantom state entries
+    real_deployed_usdc = TOTAL_CAPITAL_USDC - usable_usdc
 
     open_offers = (
         server.offers()
@@ -572,10 +576,8 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
                     " buy offer."
                 )
     else:
-        if (
-            usable_usdc >= tranche_size_usdc
-            and len(state["open_positions"]) < NUM_TIERS
-        ):
+        # Check against true capital ceiling AND available liquid USDC
+        if real_deployed_usdc < TOTAL_CAPITAL_USDC and usable_usdc >= tranche_size_usdc:
             xlm_to_buy = (tranche_size_usdc - 0.01) / target_buy_price
             print(
                 f"Trailing Buy: Placing new bid for {xlm_to_buy:.4f} XLM @"
@@ -591,8 +593,8 @@ def manage_trailing_buy_offer(builder, current_price, state, liquid_usdc):
             return True, True
         else:
             print(
-                "Skipping buy placement:"
-                f" ${usable_usdc:.2f} usable USDC available."
+                f"Skipping buy placement: ${usable_usdc:.2f} USDC usable "
+                f"(Deployed: ${real_deployed_usdc:.2f} / ${TOTAL_CAPITAL_USDC:.2f})."
             )
 
     return False, False
