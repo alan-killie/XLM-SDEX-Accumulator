@@ -463,10 +463,28 @@ def reconcile_executed_trades(builder, state):
                         pos.get("pending_xlm_gain", 0.0) * fill_ratio
                     )
 
-                    state["total_xlm_accumulated"] = round(
-                        state.get("total_xlm_accumulated", 0.0) + realized_gain,
-                        7,
-                    )
+                    if realized_gain > 0:
+                        state["total_xlm_accumulated"] = round(
+                            state.get("total_xlm_accumulated", 0.0) + realized_gain,
+                            7,
+                        )
+
+                        if "yield_history" not in state:
+                            state["yield_history"] = []
+
+                        timestamp = trade.get(
+                            "ledger_close_time",
+                            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        )
+
+                        state["yield_history"].append(
+                            {
+                                "timestamp": timestamp,
+                                "amount_xlm": round(realized_gain, 7),
+                                "trade_id": pos.get("trade_id", "consolidated"),
+                                "sell_price": pos.get("target_sell_price", 0.0),
+                            }
+                        )
 
                     pos["xlm_to_sell"] = round(
                         max(0.0, pos["xlm_to_sell"] - portion), 7
