@@ -700,7 +700,27 @@ def run_accumulator_bot():
     # ---------------------------------------------------------
     # PORTFOLIO VALUATION LOG
     # ---------------------------------------------------------
-    log_portfolio_valuation(price, liquid_usdc, native_balance, state)
+    def log_portfolio_valuation(price, liquid_usdc, native_balance, state):
+    """Calculates true account net worth without double-counting grid inventory."""
+    open_positions = state.get("open_positions", [])
+    
+    # Total cost basis locked in open positions
+    grid_usdc_cost = sum(p.get("cost_usdc", 0.0) for p in open_positions)
+    accumulated_xlm = state.get("total_xlm_accumulated", 0.0)
+
+    # Actual wallet value at current market price
+    xlm_market_value = native_balance * price
+    total_net_worth_usdc = liquid_usdc + xlm_market_value
+
+    print("=" * 55)
+    print(f"PORTFOLIO VALUATION (@ XLM/USDC ${price:.6f})")
+    print(f" Liquid USDC:            ${liquid_usdc:.2f}")
+    print(f" Grid USDC Cost Basis:   ${grid_usdc_cost:.2f} ({len(open_positions)} open positions)")
+    print(f" XLM Balance:            {native_balance:.4f} XLM (${xlm_market_value:.2f})")
+    print(f" Realized XLM Yield:     +{accumulated_xlm:.7f} XLM")
+    print("-" * 55)
+    print(f" TRUE NET WORTH:         ${total_net_worth_usdc:.2f} USDC")
+    print("=" * 55)
 
     if len(builder.operations) > 0:
         try:
